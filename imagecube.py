@@ -187,8 +187,14 @@ class imagecube:
             name = kwargs.get('name')
         hdu[0].scale('int32')
         hdu[0].header = self._annotateheader(hdu[0].header, **kwargs)
-        hdu.writeto(name.replace('.fits', '') + '.fits',
-                    overwrite=True, output_verify='fix')
+
+        # TODO: Make sure that old versions of Astropy can work.
+        try:
+            hdu.writeto(name.replace('.fits', '') + '.fits',
+                        overwrite=True, output_verify='fix')
+        except TypeError:
+            hdu.writeto(name.replace('.fits', '') + '.fits',
+                        clobber=True, output_verify='fix')
         if kwargs.get('return', False):
             return mask
 
