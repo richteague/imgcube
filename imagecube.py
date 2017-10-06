@@ -23,9 +23,10 @@ class imagecube:
     fwhm = 2. * np.sqrt(2. * np.log(2))
 
     def __init__(self, path):
-        """Read in a CASA produced image."""
+        """Read in a CASA produced image. I'm not sure of the axes."""
         self.path = path
         self.data = np.squeeze(fits.getdata(path))
+        self.data = np.swapaxes(self.data, -2, -1)
         self.header = fits.getheader(path)
         self.velax = self._readvelocityaxis(path)
         self.chan = np.mean(np.diff(self.velax))
@@ -174,10 +175,10 @@ class imagecube:
                 mask = np.array([convolve_fft(c, kern) for c in mask])
             else:
                 mask = np.array([convolve(c, kern) for c in mask])
-        mask = np.where(mask > 1e-10, 1, 0)
+        mask = np.where(mask > 1e-4, 1, 0)
 
         # Replace the data, swapping axes as appropriate.
-        # I'm not sure why this works but it does...
+        # TODO: Why?!
         hdu = fits.open(self.path)
         hdu[0].data = np.swapaxes(mask, 1, 2)
         if kwargs.get('name', None) is None:
