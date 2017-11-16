@@ -28,6 +28,7 @@ class imagecube:
         self.data = np.squeeze(fits.getdata(path))
         self.data = np.swapaxes(self.data, -2, -1)
         self.header = fits.getheader(path)
+        self.bunit = self.header['bunit']
         self.velax = self._readvelocityaxis(path)
         self.chan = np.mean(np.diff(self.velax))
         self.nu = self._readrestfreq()
@@ -36,9 +37,14 @@ class imagecube:
         self.nxpix = int(self.xaxis.size)
         self.nypix = int(self.yaxis.size)
         self.dpix = self._pixelscale()
-        self.bmaj = self.header['bmaj'] * 3600.
-        self.bmin = self.header['bmin'] * 3600.
-        self.bpa = self.header['bpa']
+        try:
+            self.bmaj = self.header['bmaj'] * 3600.
+            self.bmin = self.header['bmin'] * 3600.
+            self.bpa = self.header['bpa']
+        except KeyError:
+            self.bmaj = self.dpix
+            self.bmin = self.dpix
+            self.bpa = 0.0
         return
 
     def azimithallyaverage(self, data=None, rpnts=None, **kwargs):
@@ -198,6 +204,43 @@ class imagecube:
         if kwargs.get('return', False):
             return mask
 
+    def convolve_cube(self, bmin, bmaj=None, bpa=0.0, **kwargs):
+        """Convolve the cube with the given beam."""
+        if bmaj is None:
+            bmaj = bmin
+        if bmin < bmaj:
+            temp = bmin
+            bmin = bmaj
+            bmaj = temp
+        kern = self._beamkernel(bmin=bmin, bmaj=bmaj, bpa=bpa)
+        if kwargs.get('noise', False):
+            noise = np.random.rand(self.data.size).reshape(self.data.shape)
+            cube = self.data + kwargs.get('noise', 0.0) * noise
+        else:
+            cube = self.data
+        if kwargs.get('fast', True):
+            cube_conv = np.array([convolve_fft(c, kern) for c in cube])
+        else:
+            cube_conv = np.array([convolve(c, kern) for c in cube])
+        self.data = cube_conv
+        if kwargs.get('return', False):
+            return self.data
+
+    def restore_data(self, **kwargs):
+        """Restore the self.data to the original data."""
+        self.data = np.squeeze(fits.getdata(self.path))
+        self.data = np.swapaxes(self.data, -2, -1)
+        try:
+            self.bmaj = self.header['bmaj'] * 3600.
+            self.bmin = self.header['bmin'] * 3600.
+            self.bpa = self.header['bpa']
+        except KeyError:
+            self.bmaj = self.dpix
+            self.bmin = self.dpix
+            self.bpa = 0.0
+        if kwargs.get('return', False):
+            return self.data
+
     def _readrestfreq(self):
         """Read the rest frequency."""
         try:
@@ -209,17 +252,25 @@ class imagecube:
     @property
     def Tb(self):
         """Calculate the Jy/beam to K conversion."""
-        omega = np.pi * np.radians(self.header['bmin'])
-        omega *= np.radians(self.header['bmaj']) / 4. / np.log(2.)
-        return 1e-26 * sc.c**2 / self.nu**2 / 2. / sc.k / omega
+        if self.bunit == 'K':
+            return 1.0
+        return 1e-26 * sc.c**2 / self.nu**2 / 2. / sc.k / self._beamarea()
 
     @property
     def beamperpix(self):
         """Number of beams per pixel."""
-        Abeam = np.pi * np.radians(self.header['bmin'])
-        Abeam *= np.radians(self.header['bmaj']) / 4. / np.log(2.)
+        Abeam = np.pi * np.radians(self.bmin / 3600.)
+        Abeam *= np.radians(self.bmaj / 3600.) / 4. / np.log(2.)
         Apixel = np.radians(self.dpix / 3600.)**2
         return Apixel / Abeam
+
+    def _beamarea(self):
+        """Beam area in steradians."""
+        omega = np.radians(self.bmin / 3600.)
+        omega *= np.radians(self.bmaj / 3600.)
+        if self.bmin == self.dpix and self.bmaj == self.dpix:
+            return omega
+        return np.pi * omega / 4. / np.log(2.)
 
     def _pixelscale(self):
         """Returns the average pixel scale of the image."""
@@ -260,9 +311,12 @@ class imagecube:
 
     def _beamkernel(self, **kwargs):
         """Returns the 2D Gaussian kernel."""
-        bmaj = self.bmaj / self.dpix / self.fwhm
-        bmin = self.bmin / self.dpix / self.fwhm
-        bpa = np.radians(self.bpa)
+        bmaj = kwargs.get('bmaj', self.bmaj)
+        bmin = kwargs.get('bmin', self.bmin)
+        bpa = kwargs.get('bpa', self.bpa)
+        bmaj /= self.dpix * self.fwhm
+        bmin /= self.dpix * self.fwhm
+        bpa = np.radians(bpa)
         if kwargs.get('nbeams', 1.0) > 1.0:
             bmin *= kwargs.get('nbeams', 1.0)
             bmaj *= kwargs.get('nbeams', 1.0)
