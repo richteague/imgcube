@@ -26,6 +26,7 @@ class imagecube:
         """Read in a CASA produced image. I'm not sure of the axes."""
         self.path = path
         self.data = np.squeeze(fits.getdata(path))
+        self.data = np.swapaxes(self.data, -2, -1)
         self.header = fits.getheader(path)
         self.bunit = self.header['bunit']
         self.velax = self._readvelocityaxis(path)
@@ -185,7 +186,7 @@ class imagecube:
         # Replace the data, swapping axes as appropriate.
         # TODO: Why?!
         hdu = fits.open(self.path)
-        #hdu[0].data = np.swapaxes(mask, 1, 2)
+        hdu[0].data = np.swapaxes(mask, 1, 2)
         if kwargs.get('name', None) is None:
             name = self.path.replace('.fits', '.mask.fits')
         else:
