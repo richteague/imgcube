@@ -340,9 +340,9 @@ class imagecube:
         """Returns the Keplerian mask."""
         rsky, tsky = self._diskpolar(**kwargs)
         vkep = self._keplerian(**kwargs)
-        vdat = (self.velax - kwargs.get('vlsr', 2.89)) * 1e3
+        vdat = self.velax - kwargs.get('vlsr', 2.89) * 1e3
         vdat = vdat[:, None, None] * np.ones(self.data.shape)
-        dV = 5e2 * kwargs.get('dV', .3) * 1e3
+        dV = 5e2 * kwargs.get('dV', .3)
         return np.where(abs(vkep - vdat) <= dV, 1, 0)
 
     def _keplerian(self, **kwargs):
@@ -391,7 +391,7 @@ class imagecube:
         return np.hypot(x_dep, y_dep), np.arctan2(y_dep, x_dep)
 
     def _velocityaxis(self, fn):
-        """Return velocity axis in [km/s]."""
+        """Return velocity axis in [m/s]."""
         a_len = fits.getval(fn, 'naxis3')
         a_del = fits.getval(fn, 'cdelt3')
         a_pix = fits.getval(fn, 'crpix3')
