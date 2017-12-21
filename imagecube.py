@@ -340,7 +340,7 @@ class imagecube:
         """Returns the Keplerian mask."""
         rsky, tsky = self._diskpolar(**kwargs)
         vkep = self._keplerian(**kwargs)
-        vdat = self.velax - kwargs.get('vlsr', 2.89) * 1e3
+        vdat = (self.velax - kwargs.get('vlsr', 2.89)) * 1e3
         vdat = vdat[:, None, None] * np.ones(self.data.shape)
         dV = 5e2 * kwargs.get('dV', .3) * 1e3
         return np.where(abs(vkep - vdat) <= dV, 1, 0)
