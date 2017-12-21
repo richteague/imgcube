@@ -180,12 +180,12 @@ class imagecube:
                 mask = np.array([convolve_fft(c, kern) for c in mask])
             else:
                 mask = np.array([convolve(c, kern) for c in mask])
-        mask = np.where(mask > 1e-4, 1, 0)
+        mask = np.where(mask > 1e-10, 1, 0)
 
         # Replace the data, swapping axes as appropriate.
-        # TODO: Why?!
         hdu = fits.open(self.path)
-        #hdu[0].data = np.swapaxes(mask, 1, 2)
+        hdu[0].data = mask
+        # hdu[0].data = np.swapaxes(mask, 1, 2)
         if kwargs.get('name', None) is None:
             name = self.path.replace('.fits', '.mask.fits')
         else:
