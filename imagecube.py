@@ -342,7 +342,7 @@ class imagecube:
         vkep = self._keplerian(**kwargs)
         vdat = self.velax - kwargs.get('vlsr', 2.89) * 1e3
         vdat = vdat[:, None, None] * np.ones(self.data.shape)
-        dV = 0.5 * (kwargs.get('dV', .3) * 1e3 + self.chan)
+        dV = 5e2 * kwargs.get('dV', .3) * 1e3
         return np.where(abs(vkep - vdat) <= dV, 1, 0)
 
     def _keplerian(self, **kwargs):
