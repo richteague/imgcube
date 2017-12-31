@@ -41,7 +41,7 @@ class imagecube:
         self.nypix = int(self.yaxis.size)
         self.dpix = self._pixelscale()
 
-        # Attempt to interpret beam parameters.
+        # Attempt to interpret beam parameters in [arcsec].
         try:
             self.bmaj = self.header['bmaj'] * 3600.
             self.bmin = self.header['bmin'] * 3600.
@@ -96,6 +96,9 @@ class imagecube:
             self._annotate_header(name, 'bmin', (bmin / 3600.))
             self._annotate_header(name, 'bmaj', (bmaj / 3600.))
             self._annotate_header(name, 'bpa', bpa)
+            self.bmin = bmin
+            self.bmaj = bmaj
+            self.bpa = bpa
         return
 
     def rotate_cube(self, PA, x0=0.0, y0=0.0, save=True, name=None):
@@ -495,5 +498,5 @@ class imagecube:
         xm = np.arange(-4*np.nanmax([dy, dx]), 4*np.nanmax([dy, dx])+1)
         x, y = np.meshgrid(xm, xm)
         x, y = self._rotate(x, y, pa)
-        k = np.power(x / dx, 2) + np.power(y / dy, 2)
+        k = np.power(x / dy, 2) + np.power(y / dx, 2)
         return np.exp(-0.5 * k) / 2. / np.pi / dx / dy
