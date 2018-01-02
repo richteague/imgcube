@@ -26,7 +26,7 @@ class imagecube:
     msun = 1.989e30
     fwhm = 2. * np.sqrt(2. * np.log(2))
 
-    def __init__(self, path):
+    def __init__(self, path, brightness=True):
         """Read in a CASA produced image. I'm not sure of the axes."""
         self.path = path
         self.data = np.squeeze(fits.getdata(path))
@@ -50,6 +50,66 @@ class imagecube:
             self.bmaj = self.dpix
             self.bmin = self.dpix
             self.bpa = 0.0
+
+        # Convert to brightness temperature [K].
+        if brightness:
+            self.data *= self.Tb
+        return
+
+    def downsample_cube(self, N, center=True, pad=None, save=False, name=None):
+        """
+        Downsample the spectral axis of the cube. TODO: find a way to average
+        and preserve a given central channel.
+
+        - Input Variables -
+
+        N:          Integer value by which to downsample the spectral axis.
+        center:     If the downsampled axis has excess channels, make sure that
+                    these are split evenly, otherwise just average from the
+                    first channel.
+        pad:        Numer of channels to pad at the start.
+        save:       Boolean describing whether the downsampled cube should be
+                    saved. If True, will save with the extension
+                    'downsampled.fits'.
+        name:       Filename for the output file if the default extension is
+                    not desired.
+        """
+
+        # Determine the downsampling parameters.
+        npix, res = np.divmod(self.velax.size, N)
+        if not center:
+            res = 0
+        if pad is None:
+            pad = int(res / 2)
+        elif pad > res:
+            raise ValueError("Too large padding.")
+
+        # Downsample the velocity axis.
+        velax = [np.nanmean(self.velax[pad+i*N:pad+(i+1)*N])
+                 for i in range(npix)]
+        velax = np.squeeze(velax)
+
+        # Downsample the data.
+        data = [np.nanmean(self.data[pad+i*N:pad+(i+1)*N], axis=0)
+                for i in range(npix)]
+        data = np.squeeze(data)
+
+        # Check for array consistency and then update parameters.
+        if data.shape[0] != velax.shape[0]:
+            raise ValueError("Mismatch in spectral dimension.")
+        self.data = data
+        self.velax = velax
+        self.chan = np.mean(np.diff(self.velax))
+
+        # Save and update the header as appropriate.
+        if save or name is not None:
+            name = self._savecube(data, extension='.downsampled', name=name)
+            self._annotate_header(name, 'naxis3', self.velax.size)
+            self._annotate_header(name, 'cdelt3', self.chan)
+            self._annotate_header(name, 'crpix3', 0.5)
+            self._annotate_header(name, 'crval3', self.velax[0])
+            self._annotate_header(name, 'cunit3', 'M/S')
+            self._annotate_header(name, 'ctype3', 'VELO-LSR')
         return
 
     def convolve_cube(self, bmin, bmaj=None, bpa=0.0, fast=True, save=False,
@@ -61,10 +121,9 @@ class imagecube:
 
         bmin:       Minor axis of the beam in [arcseconds].
         bmaj:       Major axis of the beam in [arcseconds]. If not specified,
-                    the beam is assumed to be circular.
+                    the beam is assumed to  be circular.
         bpa:        Position angle of the beam in [degrees]. Describes the
                     anti-clockwise angle between the major axis and the x-axis.
-                    TODO: Check this is the correct orientation.
         fast:       Boolean describing whether to use fast fourier transforms.
         save:       Boolean describing whether the convolved cube should be
                     saved as a new output file with the extension
