@@ -168,7 +168,7 @@ class imagecube:
         - Input Variables -
 
         PA:         Position angle in [degrees] to rotate the image clockwise.
-                    If savedas a file, this value will be saved in the header.
+                    If saved as a file, this value will be saved in the header.
         x0, y0:     Coordinates of the pivot point in [arcseconds]. Note that
                     this will find the nearest pixel value to these rather than
                     using a sub-pixel location.
@@ -182,7 +182,8 @@ class imagecube:
         # Rotate the image and replace the data.
         x0 = abs(self.xaxis - x0).argmin()
         y0 = abs(self.yaxis - y0).argmin()
-        rotated = [self._rotate_channel(c, x0, y0, PA) for c in self.data]
+        to_rotate = np.where(np.isfinite(self.data), self.data, 0.0)
+        rotated = [self._rotate_channel(c, x0, y0, PA) for c in to_rotate]
         self.data = np.squeeze(rotated)
 
         # Save the data if appropriate.
@@ -293,64 +294,6 @@ class imagecube:
         else:
             return shifted
 
-    def write_mask(self, **kwargs):
-        """
-        Write a .fits file of the mask. Imporant variables are:
-
-        name:       Output name of the mask. By default it is the image name
-                    but with the '.mask' extension before '.fits'.
-        inc:        Inclination of the disk in [degrees]. Must be positive.
-        pa:         Position angle of the disk in [degrees]. This is measured
-                    anticlockwise from north to the blue-shifted major axis.
-                    This may result in a 180 discrepancy with some literature
-                    values.
-        mstar:      Mass of the central star [solar masses].
-        rout:       Outer radius of the disk in [arcsec].
-        dist:       Distance of the source in [parsec].
-        dV:         Expected line width of the source in [km/s].
-        vlsr:       Systemic velocity of the source in [km/s]. This can be a
-                    list of velocities and the mask will be the summation of
-                    masks centred at each velocity.
-        dx:         RA offset of source centre in [arcsec].
-        dy:         Dec offset of source centre in [arcsec].
-        nbeams:     Number of beams to convolve the mask with. Default is 1.
-        fast:       Use FFT in the convolution. Default is True.
-        """
-
-        vlsr = np.array(kwargs.pop('vlsr', 0.0)).flatten()
-        mask = np.sum([self._mask(vlsr=v0, **kwargs) for v0 in vlsr], axis=0)
-        kwargs['vlsr'] = vlsr
-
-        # Apply the beam convolution.
-        if kwargs.get('nbeams', 0.0) > 0.0:
-            kern = self._beamkernel(**kwargs)
-            if kwargs.get('fast', True):
-                mask = np.array([convolve_fft(c, kern) for c in mask])
-            else:
-                mask = np.array([convolve(c, kern) for c in mask])
-        mask = np.where(mask > 1e-10, 1, 0)
-
-        # Replace the data, swapping axes as appropriate.
-        hdu = fits.open(self.path)
-        hdu[0].data = mask
-        # hdu[0].data = np.swapaxes(mask, 1, 2)
-        if kwargs.get('name', None) is None:
-            name = self.path.replace('.fits', '.mask.fits')
-        else:
-            name = kwargs.get('name')
-        hdu[0].scale('int32')
-        hdu[0].header = self._annotateheader(hdu[0].header, **kwargs)
-
-        # TODO: Make sure that old versions of Astropy can work.
-        try:
-            hdu.writeto(name.replace('.fits', '') + '.fits',
-                        overwrite=True, output_verify='fix')
-        except TypeError:
-            hdu.writeto(name.replace('.fits', '') + '.fits',
-                        clobber=True, output_verify='fix')
-        if kwargs.get('return', False):
-            return mask
-
     def _annotate_header(self, filename, key, value):
         """Update / add the header key and value."""
         with fits.open(filename, 'update') as f:
@@ -453,57 +396,259 @@ class imagecube:
             hdr['VSYS%d' % v] = v0, 'systemic velocity [km/s].'
         return hdr
 
-    def _beamkernel(self, **kwargs):
-        """Returns the 2D Gaussian kernel."""
-        bmaj = kwargs.get('bmaj', self.bmaj)
-        bmin = kwargs.get('bmin', self.bmin)
-        bpa = kwargs.get('bpa', self.bpa)
+    def write_mask(self, inc=0.0, PA=0.0, mstar=1.0, rout=None, dist=1.0,
+                   dV=500., vlsr=0.0, psi=0.0, x0=0.0, y0=0.0, nbeams=0.0,
+                   fast=True, return_mask=False, name=None, rin=None,
+                   single_layer=False):
+        """
+        Write a .fits file of the mask. Imporant variables are:
+
+        - Input -
+
+        name:           Output name of the mask. By default it is the image
+                        name but with the '.mask' extension before '.fits'.
+        inc:            Inclination of the disk in [degrees].
+        pa:             Position angle of the disk in [degrees]. This is
+                        measured anticlockwise from north to the blue-shifted
+                        major axis. This may result in a 180 discrepancy with
+                        some literature values.
+        mstar:          Mass of the central star [solar masses].
+        rout:           Outer radius of the disk in [arcsec].
+        dist:           Distance of the source in [parsec].
+        dV:             Expected line width of the source in [m/s].
+        vlsr:           Systemic velocity of the source in [m/s]. This can be a
+                        list of velocities and the mask will be the summation
+                        of masks centred at each velocity.
+        psi:            Angle between the emission surface and the midplane. If
+                        not zero then will mask at two inclinations to mimic
+                        the splitting expected for molecular lines.
+        dx:             RA offset of source centre in [arcsec].
+        dy:             Dec offset of source centre in [arcsec].
+        nbeams:         Number of beams to convolve the mask with.
+        fast:           Use FFT in the convolution. Default is True.
+        single_layer:   Only use a single psi value. This can lead to missing
+                        emission that originates closer towards the midplane.
+
+        - Returns -
+
+        mask:           Boolean mask of where emission is to be expected.
+        """
+
+        # Define the different masks to sum over. This includes different
+        # flaring angles and source velocities (for hyperfine components).
+        vlsr = np.atleast_1d(vlsr)
+        if psi <= 3.0 or single_layer:
+            psis = np.atleast_1d(psi)
+        else:
+            psis = (psi - np.unique(np.arange(0.0, psi, 3.0)))[::-1]
+
+        # Generate the mask, looping through various parameters.
+        mask = [self._mask(inc=inc, PA=PA, x0=x0, y0=y0, vlsr=v0, dV=dV,
+                           dist=dist, mstar=mstar, psi=p, rout=rout, rin=rin)
+                for v0 in vlsr for p in psis]
+        mask = np.where(np.sum(mask, axis=0) > 0, 1, 0)
+
+        # Apply the beam convolution.
+        if nbeams > 0.0:
+            kern = self._beamkernel(nbeams=nbeams)
+            if fast:
+                mask = np.array([convolve_fft(c, kern) for c in mask])
+            else:
+                mask = np.array([convolve(c, kern) for c in mask])
+            mask = np.where(mask > 1e-10, 1, 0)
+
+        # Return the mask.
+        if return_mask:
+            return mask
+
+        # Replace the data, swapping axes as appropriate.
+        hdu = fits.open(self.path)
+        hdu[0].data = mask
+        if name is None:
+            name = self.path.replace('.fits', '.mask.fits')
+        hdu[0].scale('int32')
+
+        # Save the mask.
+        try:
+            hdu.writeto(name.replace('.fits', '') + '.fits',
+                        overwrite=True, output_verify='fix')
+        except TypeError:
+            hdu.writeto(name.replace('.fits', '') + '.fits',
+                        clobber=True, output_verify='fix')
+
+    def _mask(self, inc=0.0, PA=0.0, x0=0.0, y0=0.0, vlsr=0.0, dV=500.,
+              dist=1.0, mstar=1.0, psi=0.0, rout=None, rin=None):
+        """
+        Returns the Keplerian mask.
+
+        - Input -
+
+        inc:        Inclination of the disk in degrees.
+        PA:         Position angle of the disk in degrees, measured as the
+                    angle between the blue-shifted major-axis and North in an
+                    anticlockwise direction.
+        x0, y0:     Relative offsets of the centre of the disk in [arcsec].
+        vlsr:       Velocity of the source in [m/s].
+        dV:         Expected intrinsic linewidth in [m/s].
+        dist:       Distance to the source in [pc].
+        mstar:      Mass of the central star in [Msun].
+        psi:        Flaring angle [deg] between the emission surface and
+                    the midplane.
+        rout:       Outer radius of the mask in [au].
+        rin:        Inner radius of the mask in [au].
+
+        - Returns =
+
+        mask:       Integer mask of regions expected to have emission.
+        """
+
+        vkep = self._keplerian(mstar=mstar, inc=inc, PA=PA, x0=x0, y0=y0,
+                               dist=dist, psi=psi, rout=rout, rin=rin,
+                               vfill=1e20)
+        vdat = (self.velax - vlsr)[:, None, None] * np.ones(self.data.shape)
+        if psi == 0.0:
+            vkep = vkep[None, :, :] * np.ones(self.data.shape)
+            mask = np.where(abs(vkep - vdat) <= dV, 1, 0)
+        else:
+            vkep_near = vkep[0][None, :, :] * np.ones(self.data.shape)
+            vkep_far = vkep[1][None, :, :] * np.ones(self.data.shape)
+            mask_near = np.where(abs(vkep_near - vdat) <= dV, 1, 0)
+            mask_far = np.where(abs(vkep_far - vdat) <= dV, 1, 0)
+            mask = np.logical_or(mask_near, mask_far)
+        return mask
+
+    def _keplerian(self, mstar=1.0, inc=0.0, PA=0.0, x0=0.0, y0=0.0, dist=1.0,
+                   psi=0.0, rout=None, rin=None, vfill=np.nan):
+        """
+        Returns the projected Keplerian velocity in [m/s].
+
+        - Input -
+
+        mstar:      Mass of the central star in [Msun].
+        inc:        Inclination of the disk in [deg].
+        PA:         Position angle of the disk in [deg], measured as the angle
+                    between the blue-shifted major-axis and North in an
+                    anticlockwise direction.
+        x0, y0:     Relative offsets of the centre of the disk in [arcsec].
+        dist:       Distance to the source in [pc].
+        psi:        Flaring angle [deg] between the emission surface and the
+                    midplane. Examples include 15 degrees for 12CO or 9 degrees
+                    for 13CO.
+        rout:       Outer radius of the disk in [au]. Outside this radius the
+                    returned velocity will be `vfill`.
+        rin:        Inner radius of the disk in [au]. Inside this radius the
+                    returned velocity will be `vfill`.
+        vfill:      Value to fill pixels outside the disk.
+
+        - Returns -
+
+        vkep:       Project Keplerian velocity in [m/s].
+        """
+
+        # Calculate the Keplerian rotation across the whole disk.
+        x_sky, y_sky = np.meshgrid(self.xaxis - x0, self.yaxis - y0)
+        x_rot, y_rot = self._rotate(x_sky, y_sky, PA - 90.)
+        t_pos, t_neg = self._solve_quadratic(x_rot, y_rot, inc, psi)
+
+        y_disk = y_rot / np.cos(np.radians(inc))
+        y_near = y_disk + t_pos * np.sin(np.radians(inc))
+        y_far = y_disk + t_neg * np.sin(np.radians(inc))
+        r_near, r_far = np.hypot(x_rot, y_near), np.hypot(x_rot, y_far)
+        t_near, t_far = np.arctan2(y_near, x_rot), np.arctan2(y_far, x_rot)
+
+        # Projected Keplerian velocities.
+        v_near = np.sqrt(sc.G * mstar * self.msun / r_near / sc.au / dist)
+        v_near *= np.sin(np.radians(inc)) * np.cos(t_near)
+        v_far = np.sqrt(sc.G * mstar * self.msun / r_far / sc.au / dist)
+        v_far *= np.sin(np.radians(inc)) * np.cos(t_far)
+
+        # Mask pixels outside the disk and return.
+        if rout is None:
+            rout = np.nanmax([r_near, r_far])
+        else:
+            rout /= dist
+        if rin is None:
+            rin = 0.0
+        else:
+            rin /= dist
+        v_far = np.where(np.logical_and(r_far >= rin, r_far <= rout),
+                         v_far, vfill)
+        v_near = np.where(np.logical_and(r_near >= rin, r_near <= rout),
+                          v_near, vfill)
+
+        # If there is no flaring, return just the midplane velocity.
+        if psi == 0.0:
+            return v_far
+        return v_far, v_near
+
+    def _deproject_polar(self, inc=0.0, PA=0.0, x0=0.0, y0=0.0, dist=None):
+        """
+        Deproject the attached cube positions to disk coordinates.
+
+        - Inputs -
+
+        inc:        Inclination of the disk in degrees.
+        PA:         Position angle of the disk in degrees, measured as the
+                    angle between the blue-shifted major-axis and North in an
+                    anticlockwise direction.
+        x0, y0:     Relative offsets of the centre of the disk in [arcsec].
+        dist:       Distance to the source in [pc].
+
+        - Returns =
+
+        r:          Deprojected radial distance of pixel from the source center
+                    in [au] if `dist` is provided, otherwise in [arcsec].
+        theta:      Polar angle in [deg] of the pixel from the major axis,
+                    measured anticlockwise from the blue-shifted major axis.
+        """
+        x_sky = self.xaxis[None, :] * np.ones(self.nypix)[:, None] - x0
+        y_sky = self.yaxis[:, None] * np.ones(self.nxpix)[None, :] - y0
+        x_rot, y_rot = self._rotate(x_sky, y_sky, PA)
+        x_dep, y_dep = self._incline(x_rot, y_rot, inc)
+        r, theta = np.hypot(x_dep, y_dep), np.arctan2(y_dep, x_dep)
+        if dist is not None:
+            r *= dist
+        return r, np.degrees(theta)
+
+    def _rotate(self, x, y, PA):
+        '''Clockwise rotation about origin by PA [deg].'''
+        x_rot = x * np.cos(np.radians(PA)) + y * np.sin(np.radians(PA))
+        y_rot = y * np.cos(np.radians(PA)) - x * np.sin(np.radians(PA))
+        return x_rot, y_rot
+
+    def _incline(self, x, y, inc):
+        '''Incline the image by angle inc [deg] about x-axis.'''
+        return x, y / np.cos(np.radians(inc))
+
+    def _rotate_channel(self, chan, x0, y0, PA):
+        """Rotate the channel clockwise by PA about (x0, y0)."""
+        dy = [self.nypix - y0, y0]
+        dx = [self.nxpix - x0, x0]
+        chan_padded = np.pad(chan, [dy, dx], 'constant')
+        chan_rotated = ndimage.rotate(chan_padded, PA, reshape=False)
+        return chan_rotated[dy[0]:-dy[1], dx[0]:-dx[1]]
+
+    def _beamkernel(self, bmaj=None, bmin=None, bpa=None, nbeams=1.0):
+        """Returns the 2D Gaussian kernel. CHECK ROTATION."""
+        if bmaj is None and bmin is None and bpa is None:
+            bmaj = self.bmaj
+            bmin = self.bmin
+            bpa = self.bpa
         bmaj /= self.dpix * self.fwhm
         bmin /= self.dpix * self.fwhm
         bpa = np.radians(bpa)
-        if kwargs.get('nbeams', 1.0) > 1.0:
-            bmin *= kwargs.get('nbeams', 1.0)
-            bmaj *= kwargs.get('nbeams', 1.0)
+        if nbeams > 1.0:
+            bmin *= nbeams
+            bmaj *= nbeams
         return Kernel(self._gaussian2D(bmin, bmaj, pa=bpa))
 
-    def _mask(self, **kwargs):
-        """Returns the Keplerian mask."""
-        rsky, tsky = self._diskpolar(**kwargs)
-        vkep = self._keplerian(**kwargs)
-        vdat = self.velax - kwargs.get('vlsr', 2.89) * 1e3
-        vdat = vdat[:, None, None] * np.ones(self.data.shape)
-        dV = 5e2 * kwargs.get('dV', .3)
-        return np.where(abs(vkep - vdat) <= dV, 1, 0)
-
-    def _keplerian(self, **kwargs):
-        """Returns the projected Keplerian velocity [m/s]."""
-        rsky, tsky = self._diskpolar(**kwargs)
-        vkep = np.sqrt(sc.G * kwargs.get('mstar', 0.7) * self.msun / rsky)
-        vkep *= np.sin(np.radians(kwargs.get('inc', 6.))) * np.cos(tsky)
-        rout = kwargs.get('rout', 4) * sc.au * kwargs.get('dist', 1.0)
-        vkep = np.where(rsky <= rout, vkep, kwargs.get('vfill', 1e20))
-        if kwargs.get('image', False):
-            return vkep[0]
-        return vkep
-
-    def _diskpolar(self, **kwargs):
-        """Returns the polar coordinates of the sky in [m] and [rad]."""
-        rsky, tsky = self._deproject(**kwargs)
-        rsky *= kwargs.get('dist', 1.0) * sc.au
-        if not kwargs.get('image', False):
-            rsky = rsky[None, :, :] * np.ones(self.data.shape)
-            tsky = tsky[None, :, :] * np.ones(self.data.shape)
-        return rsky, tsky
-
-    def _deproject(self, **kwargs):
-        """Returns the deprojected pixel values, (r, theta)."""
-        inc, pa = kwargs.get('inc', 0.0), kwargs.get('pa', 0.0)
-        dx, dy = kwargs.get('dx', 0.0), kwargs.get('dy', 0.0)
-        x_sky = self.xaxis[None, :] * np.ones(self.nypix)[:, None] - dx
-        y_sky = self.yaxis[:, None] * np.ones(self.nxpix)[None, :] - dy
-        x_rot, y_rot = self._rotate(x_sky, y_sky, np.radians(pa))
-        x_dep, y_dep = self._incline(x_rot, y_rot, np.radians(inc))
-        return np.hypot(x_dep, y_dep), np.arctan2(y_dep, x_dep)
+    def _gaussian2D(self, dx, dy, PA=0.0):
+        """2D Gaussian kernel in pixel coordinates."""
+        xm = np.arange(-4*np.nanmax([dy, dx]), 4*np.nanmax([dy, dx])+1)
+        x, y = np.meshgrid(xm, xm)
+        x, y = self._rotate(x, y, PA)
+        k = np.power(x / dx, 2) + np.power(y / dy, 2)
+        return np.exp(-0.5 * k) / 2. / np.pi / dx / dy
 
     def _velocityaxis(self, fn):
         """Return velocity axis in [m/s]."""
@@ -525,6 +670,16 @@ class imagecube:
         else:
             return self._velocityaxis(fn)
 
+    def _solve_quadratic(self, x, y, inc_in, psi_in):
+        """Solve Eqn.(5) from Rosenfeld et al. (2013)."""
+        inc, psi = np.radians(inc_in), np.radians(psi_in)
+        a = np.cos(2.*inc) + np.cos(2.*psi)
+        b = -4. * np.sin(psi)**2 * y * np.tan(inc)
+        c = -2. * np.sin(psi)**2 * (x**2 + np.power(y / np.cos(inc), 2))
+        t_p = -b + np.sqrt(b**2 - 4 * a * c) / 2. / a
+        t_n = -b - np.sqrt(b**2 - 4 * a * c) / 2. / a
+        return t_p, t_n
+
     def _readpositionaxis(self, fn, a=1):
         """Returns the position axis in ["]."""
         if a not in [1, 2]:
@@ -533,29 +688,3 @@ class imagecube:
         a_del = fits.getval(fn, 'cdelt%d' % a)
         a_pix = fits.getval(fn, 'crpix%d' % a)
         return 3600. * ((np.arange(1, a_len+1) - a_pix + 0.5) * a_del)
-
-    def _rotate(self, x, y, t):
-        '''Rotation by angle t [rad].'''
-        x_rot = x * np.cos(t) + y * np.sin(t)
-        y_rot = y * np.cos(t) - x * np.sin(t)
-        return x_rot, y_rot
-
-    def _incline(self, x, y, i):
-        '''Incline the image by angle i [rad].'''
-        return x, y / np.cos(i)
-
-    def _rotate_channel(self, chan, x0, y0, PA):
-        """Rotate the channel clockwise by PA about (x0, y0)."""
-        dy = [self.nypix - y0, y0]
-        dx = [self.nxpix - x0, x0]
-        chan_padded = np.pad(chan, [dy, dx], 'constant')
-        chan_rotated = ndimage.rotate(chan_padded, PA, reshape=False)
-        return chan_rotated[dy[0]:-dy[1], dx[0]:-dx[1]]
-
-    def _gaussian2D(self, dx, dy, pa=0.0):
-        """2D Gaussian kernel in pixel coordinates."""
-        xm = np.arange(-4*np.nanmax([dy, dx]), 4*np.nanmax([dy, dx])+1)
-        x, y = np.meshgrid(xm, xm)
-        x, y = self._rotate(x, y, pa)
-        k = np.power(x / dy, 2) + np.power(y / dx, 2)
-        return np.exp(-0.5 * k) / 2. / np.pi / dx / dy

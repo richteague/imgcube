@@ -1,10 +1,13 @@
 """
-Class to read in the image cubes produced with CASA. Incorporates some simple
-functions which help analyse the data, for example creating a Keplerian mask
-for cleaning or spectrally deprojecting each pixel to a common VLSR.
+Class to read in the image cubes produced with CASA or LIME. Also implements
+some convenience functions to aid analysis including:
 
-TODO:
-    1 - Include a better way to annotate the headers. Maybe some form of dict.
+convolve_cube:      Convolve the data with a 2D Gaussian beam.
+radial_profiles:    Azimuthally average the cube assuming some geometrical
+                    parameters.
+rotate_cube:        Rotate the cube around a given pivot pixel.
+write_mask:         Generate a Keplerian mask used for CLEANing with CASA.
+
 """
 
 import numpy as np
@@ -13,6 +16,7 @@ import scipy.constants as sc
 from astropy.convolution import convolve, convolve_fft
 from astropy.convolution import Kernel
 from scipy.interpolate import interp1d
+import scipy.ndimage as ndimage
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -22,11 +26,10 @@ class imagecube:
     msun = 1.989e30
     fwhm = 2. * np.sqrt(2. * np.log(2))
 
-    def __init__(self, path):
+    def __init__(self, path, brightness=True):
         """Read in a CASA produced image. I'm not sure of the axes."""
         self.path = path
         self.data = np.squeeze(fits.getdata(path))
-        self.data = np.swapaxes(self.data, -2, -1)
         self.header = fits.getheader(path)
         self.bunit = self.header['bunit']
         self.velax = self._readvelocityaxis(path)
@@ -37,6 +40,8 @@ class imagecube:
         self.nxpix = int(self.xaxis.size)
         self.nypix = int(self.yaxis.size)
         self.dpix = self._pixelscale()
+
+        # Attempt to interpret beam parameters in [arcsec].
         try:
             self.bmaj = self.header['bmaj'] * 3600.
             self.bmin = self.header['bmin'] * 3600.
@@ -45,11 +50,154 @@ class imagecube:
             self.bmaj = self.dpix
             self.bmin = self.dpix
             self.bpa = 0.0
+
+        # Convert to brightness temperature [K].
+        if brightness:
+            self.data *= self.Tb
+        return
+
+    def downsample_cube(self, N, center=True, pad=None, save=False, name=None):
+        """
+        Downsample the spectral axis of the cube. TODO: find a way to average
+        and preserve a given central channel.
+
+        - Input Variables -
+
+        N:          Integer value by which to downsample the spectral axis.
+        center:     If the downsampled axis has excess channels, make sure that
+                    these are split evenly, otherwise just average from the
+                    first channel.
+        pad:        Numer of channels to pad at the start.
+        save:       Boolean describing whether the downsampled cube should be
+                    saved. If True, will save with the extension
+                    'downsampled.fits'.
+        name:       Filename for the output file if the default extension is
+                    not desired.
+        """
+
+        # Determine the downsampling parameters.
+        npix, res = np.divmod(self.velax.size, N)
+        if not center:
+            res = 0
+        if pad is None:
+            pad = int(res / 2)
+        elif pad > res:
+            raise ValueError("Too large padding.")
+
+        # Downsample the velocity axis.
+        velax = [np.nanmean(self.velax[pad+i*N:pad+(i+1)*N])
+                 for i in range(npix)]
+        velax = np.squeeze(velax)
+
+        # Downsample the data.
+        data = [np.nanmean(self.data[pad+i*N:pad+(i+1)*N], axis=0)
+                for i in range(npix)]
+        data = np.squeeze(data)
+
+        # Check for array consistency and then update parameters.
+        if data.shape[0] != velax.shape[0]:
+            raise ValueError("Mismatch in spectral dimension.")
+        self.data = data
+        self.velax = velax
+        self.chan = np.mean(np.diff(self.velax))
+
+        # Save and update the header as appropriate.
+        if save or name is not None:
+            name = self._savecube(data, extension='.downsampled', name=name)
+            self._annotate_header(name, 'naxis3', self.velax.size)
+            self._annotate_header(name, 'cdelt3', self.chan)
+            self._annotate_header(name, 'crpix3', 0.5)
+            self._annotate_header(name, 'crval3', self.velax[0])
+            self._annotate_header(name, 'cunit3', 'M/S')
+            self._annotate_header(name, 'ctype3', 'VELO-LSR')
+        return
+
+    def convolve_cube(self, bmin, bmaj=None, bpa=0.0, fast=True, save=False,
+                      name=None):
+        """
+        Convolve the cube with a 2D Gaussian function.
+
+        - Input Variables -
+
+        bmin:       Minor axis of the beam in [arcseconds].
+        bmaj:       Major axis of the beam in [arcseconds]. If not specified,
+                    the beam is assumed to  be circular.
+        bpa:        Position angle of the beam in [degrees]. Describes the
+                    anti-clockwise angle between the major axis and the x-axis.
+        fast:       Boolean describing whether to use fast fourier transforms.
+        save:       Boolean describing whether the convolved cube should be
+                    saved as a new output file with the extension
+                    'convolved.fits' and the beam parameters included in the
+                    header as usual.
+        name:       Filename for the output file if the previous extension is
+                    not desired.
+        """
+
+        # Fill the beam parameters and generate the kernel.
+        if bmaj is None:
+            bmaj = bmin
+        if bmin < bmaj:
+            temp = bmin
+            bmin = bmaj
+            bmaj = temp
+        kern = self._beamkernel(bmin=bmin, bmaj=bmaj, bpa=bpa)
+
+        # Apply the convolution on a channel-by-channel basis.
+        if fast:
+            cube_conv = np.array([convolve_fft(c, kern) for c in self.data])
+        else:
+            cube_conv = np.array([convolve(c, kern) for c in self.data])
+        self.data = cube_conv
+
+        # If appropriate, save the convolved cube.
+        if save or name is not None:
+            name = self._savecube(self.data, extension='.convolved', name=name)
+            self._annotate_header(name, 'bmin', (bmin / 3600.))
+            self._annotate_header(name, 'bmaj', (bmaj / 3600.))
+            self._annotate_header(name, 'bpa', bpa)
+            self.bmin = bmin
+            self.bmaj = bmaj
+            self.bpa = bpa
+        return
+
+    def rotate_cube(self, PA, x0=0.0, y0=0.0, save=True, name=None):
+        """
+        Rotate the image clockwise (west-ward) PA degrees about (x0, y0). As
+        this is a relatively long process, can save this as a rotated cube.
+
+        - Input Variables -
+
+        PA:         Position angle in [degrees] to rotate the image clockwise.
+                    If saved as a file, this value will be saved in the header.
+        x0, y0:     Coordinates of the pivot point in [arcseconds]. Note that
+                    this will find the nearest pixel value to these rather than
+                    using a sub-pixel location.
+        save:       Boolean describing to save the rotated cube as a new file.
+                    The filename will have the extension '.rotated%.1f.fits'
+                    specifying the angle used for the rotation.
+        name:       Name of the output file if the 'rotated' default extension
+                    is not desired.
+        """
+
+        # Rotate the image and replace the data.
+        x0 = abs(self.xaxis - x0).argmin()
+        y0 = abs(self.yaxis - y0).argmin()
+        to_rotate = np.where(np.isfinite(self.data), self.data, 0.0)
+        rotated = [self._rotate_channel(c, x0, y0, PA) for c in to_rotate]
+        self.data = np.squeeze(rotated)
+
+        # Save the data if appropriate.
+        if save or name is not None:
+            name = self._savecube(self.data, extension='.rotated%.1f' % PA,
+                                  name=name)
+            self._annotate_header(name, 'PA', PA)
         return
 
     def azimithallyaverage(self, data=None, rpnts=None, **kwargs):
         """
-        Azimuthally average a cube. Variables are:
+        Azimuthally average a cube.
+
+        - Input Variables -
 
         data:       Data to deproject, by default is the attached cube.
         rpnts:      Points to average at in [arcsec]. If none are given, assume
@@ -146,7 +294,7 @@ class imagecube:
         else:
             return shifted
 
-    def writemask(self, **kwargs):
+    def write_mask(self, return_mask, **kwargs):
         """
         Write a .fits file of the mask. Imporant variables are:
 
@@ -181,12 +329,16 @@ class imagecube:
                 mask = np.array([convolve_fft(c, kern) for c in mask])
             else:
                 mask = np.array([convolve(c, kern) for c in mask])
-        mask = np.where(mask > 1e-4, 1, 0)
+        mask = np.where(mask > 1e-10, 1, 0)
+
+        # Return the mask.
+        if return_mask:
+            return mask
 
         # Replace the data, swapping axes as appropriate.
-        # TODO: Why?!
         hdu = fits.open(self.path)
-        hdu[0].data = np.swapaxes(mask, 1, 2)
+        hdu[0].data = mask
+        # hdu[0].data = np.swapaxes(mask, 1, 2)
         if kwargs.get('name', None) is None:
             name = self.path.replace('.fits', '.mask.fits')
         else:
@@ -194,15 +346,19 @@ class imagecube:
         hdu[0].scale('int32')
         hdu[0].header = self._annotateheader(hdu[0].header, **kwargs)
 
-        # TODO: Make sure that old versions of Astropy can work.
+        # Save the mask.
         try:
             hdu.writeto(name.replace('.fits', '') + '.fits',
                         overwrite=True, output_verify='fix')
         except TypeError:
             hdu.writeto(name.replace('.fits', '') + '.fits',
                         clobber=True, output_verify='fix')
-        if kwargs.get('return', False):
-            return mask
+
+    def _annotate_header(self, filename, key, value):
+        """Update / add the header key and value."""
+        with fits.open(filename, 'update') as f:
+            f[0].header[key] = value
+        return
 
     def get_radius(self, radius, dr=0.1, **kwargs):
         """Return the azimuthally averaged value at r +/- dr [arcsec]."""
@@ -218,28 +374,6 @@ class imagecube:
         pavgs = np.nanmean(ppnts[ridxs == 1], axis=0)
         pstds = np.nanstd(ppnts[ridxs == 1], axis=0)
         return pavgs, pstds
-
-    def convolve_cube(self, bmin, bmaj=None, bpa=0.0, **kwargs):
-        """Convolve the cube with the given beam."""
-        if bmaj is None:
-            bmaj = bmin
-        if bmin < bmaj:
-            temp = bmin
-            bmin = bmaj
-            bmaj = temp
-        kern = self._beamkernel(bmin=bmin, bmaj=bmaj, bpa=bpa)
-        if kwargs.get('noise', False):
-            noise = np.random.rand(self.data.size).reshape(self.data.shape)
-            cube = self.data + kwargs.get('noise', 0.0) * noise
-        else:
-            cube = self.data
-        if kwargs.get('fast', True):
-            cube_conv = np.array([convolve_fft(c, kern) for c in cube])
-        else:
-            cube_conv = np.array([convolve(c, kern) for c in cube])
-        self.data = cube_conv
-        if kwargs.get('return', False):
-            return self.data
 
     def restore_data(self, **kwargs):
         """Restore the self.data to the original data."""
@@ -300,17 +434,15 @@ class imagecube:
         a_ref = fits.getval(fn, 'crval3')
         return a_ref + (np.arange(a_len) - a_pix + 0.5) * a_del
 
-    def _savecube(self, newdata, extension='', **kwargs):
+    def _savecube(self, newdata, extension='', name=None):
         """Save a new .fits file with the appropriate data."""
         hdu = fits.open(self.path)
-        hdu[0].data = np.swapaxes(newdata, 1, 2)
-        name = kwargs.get('name', None)
-        if kwargs.get('name', None) is None:
+        hdu[0].data = newdata
+        if name is None:
             name = self.path.replace('.fits', '%s.fits' % extension)
-        # hdu[0].scale('int32')
-        hdu.writeto(name.replace('.fits', '') + '.fits',
-                    overwrite=True, output_verify='fix')
-        return
+        name = name.replace('.fits', '') + '.fits'
+        hdu.writeto(name, overwrite=True, output_verify='fix')
+        return name
 
     def _annotateheader(self, hdr, **kwargs):
         """Include the model parameters in the header."""
@@ -343,7 +475,7 @@ class imagecube:
         vkep = self._keplerian(**kwargs)
         vdat = self.velax - kwargs.get('vlsr', 2.89) * 1e3
         vdat = vdat[:, None, None] * np.ones(self.data.shape)
-        dV = 0.5 * (kwargs.get('dV', .3) * 1e3 + self.chan)
+        dV = 5e2 * kwargs.get('dV', .3)
         return np.where(abs(vkep - vdat) <= dV, 1, 0)
 
     def _keplerian(self, **kwargs):
@@ -356,21 +488,6 @@ class imagecube:
         if kwargs.get('image', False):
             return vkep[0]
         return vkep
-
-    def _powerlawkep(self, **kwargs):
-        """Returns the projected velocity profile [m/s]."""
-        rsky, tsky = self._deproject(**kwargs)
-        dist = kwargs.get('dist', 1.0)
-        mstar = kwargs.get('mstar', 0.7)
-        qkep = kwargs.get('qkep', -0.5)
-        rout = kwargs.get('rout', 4.)
-        inc = np.radians(kwargs.get('inc', 6.))
-        vproj = np.sqrt(sc.G * mstar * self.msun / dist / sc.au)
-        vproj *= np.power(rsky, qkep) * np.sin(inc) * np.cos(tsky)
-        vproj = np.where(rsky <= rout, vproj, kwargs.get('vfill', 1e20))
-        if kwargs.get('image', False):
-            return vproj
-        return vproj[None, :, :] * np.ones(self.data.shape)
 
     def _diskpolar(self, **kwargs):
         """Returns the polar coordinates of the sky in [m] and [rad]."""
@@ -392,7 +509,7 @@ class imagecube:
         return np.hypot(x_dep, y_dep), np.arctan2(y_dep, x_dep)
 
     def _velocityaxis(self, fn):
-        """Return velocity axis in [km/s]."""
+        """Return velocity axis in [m/s]."""
         a_len = fits.getval(fn, 'naxis3')
         a_del = fits.getval(fn, 'cdelt3')
         a_pix = fits.getval(fn, 'crpix3')
@@ -430,10 +547,18 @@ class imagecube:
         '''Incline the image by angle i [rad].'''
         return x, y / np.cos(i)
 
+    def _rotate_channel(self, chan, x0, y0, PA):
+        """Rotate the channel clockwise by PA about (x0, y0)."""
+        dy = [self.nypix - y0, y0]
+        dx = [self.nxpix - x0, x0]
+        chan_padded = np.pad(chan, [dy, dx], 'constant')
+        chan_rotated = ndimage.rotate(chan_padded, PA, reshape=False)
+        return chan_rotated[dy[0]:-dy[1], dx[0]:-dx[1]]
+
     def _gaussian2D(self, dx, dy, pa=0.0):
         """2D Gaussian kernel in pixel coordinates."""
         xm = np.arange(-4*np.nanmax([dy, dx]), 4*np.nanmax([dy, dx])+1)
         x, y = np.meshgrid(xm, xm)
         x, y = self._rotate(x, y, pa)
-        k = np.power(x / dx, 2) + np.power(y / dy, 2)
+        k = np.power(x / dy, 2) + np.power(y / dx, 2)
         return np.exp(-0.5 * k) / 2. / np.pi / dx / dy
