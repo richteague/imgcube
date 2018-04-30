@@ -26,17 +26,31 @@ class imagecube:
     msun = 1.989e30
     fwhm = 2. * np.sqrt(2. * np.log(2))
 
-    def __init__(self, path, brightness=True):
-        """Read in a CASA produced image. I'm not sure of the axes."""
+    def __init__(self, path, brightness=None, offset=True, mask=None):
+        """Read in a CASA produced image."""
         self.path = path
+
+        # Load the data and mask if appropriate.
         self.data = np.squeeze(fits.getdata(path))
+        if mask is not None:
+            self.mask = np.squeeze(fits.getdata(mask))
+        else:
+            self.mask = np.ones(self.data.shape)
+        self.data *= np.where(self.mask, 1, 0)
+
+        # Flip the data array to make sure it is correct.
+        if self.data.ndim == 2:
+            self.data = self.data[::-1, ::-1]
+        else:
+            self.data = self.data[:, ::-1, ::-1]
+
         self.header = fits.getheader(path)
         self.bunit = self.header['bunit']
         self.velax = self._readvelocityaxis(path)
         self.chan = np.mean(np.diff(self.velax))
         self.nu = self._readrestfreq()
-        self.xaxis = self._readpositionaxis(path, 1)
-        self.yaxis = self._readpositionaxis(path, 2)
+        self.xaxis = self._readpositionaxis(path, 1, offset)
+        self.yaxis = self._readpositionaxis(path, 2, offset)
         self.nxpix = int(self.xaxis.size)
         self.nypix = int(self.yaxis.size)
         self.dpix = self._pixelscale()
@@ -47,13 +61,16 @@ class imagecube:
             self.bmin = self.header['bmin'] * 3600.
             self.bpa = self.header['bpa']
         except KeyError:
-            self.bmaj = self.dpix
-            self.bmin = self.dpix
+            self.bmaj = abs(self.dpix)
+            self.bmin = abs(self.dpix)
             self.bpa = 0.0
 
         # Convert to brightness temperature [K].
-        if brightness:
+        if brightness is None and self.data.ndim == 3:
             self.data *= self.Tb
+        elif brightness:
+            self.data *= self.Tb
+
         return
 
     def downsample_cube(self, N, center=True, pad=None, save=False, name=None):
@@ -335,7 +352,10 @@ class imagecube:
         try:
             nu = self.header['restfreq']
         except KeyError:
-            nu = self.header['restfrq']
+            try:
+                nu = self.header['restfrq']
+            except KeyError:
+                nu = self.header['crval3']
         return nu
 
     @property
@@ -381,7 +401,7 @@ class imagecube:
         if name is None:
             name = self.path.replace('.fits', '%s.fits' % extension)
         name = name.replace('.fits', '') + '.fits'
-        hdu.writeto(name, overwrite=True, output_verify='fix')
+        hdu.writeto(name, overwrite=True, output_verify='fix+warn')
         return name
 
     def _annotateheader(self, hdr, **kwargs):
@@ -436,7 +456,6 @@ class imagecube:
 
         # Define the different masks to sum over. This includes different
         # flaring angles and source velocities (for hyperfine components).
-        vlsr = np.atleast_1d(vlsr)
         if psi <= 3.0 or single_layer:
             psis = np.atleast_1d(psi)
         else:
@@ -445,7 +464,7 @@ class imagecube:
         # Generate the mask, looping through various parameters.
         mask = [self._mask(inc=inc, PA=PA, x0=x0, y0=y0, vlsr=v0, dV=dV,
                            dist=dist, mstar=mstar, psi=p, rout=rout, rin=rin)
-                for v0 in vlsr for p in psis]
+                for v0 in np.atleast_1d(vlsr) for p in psis]
         mask = np.where(np.sum(mask, axis=0) > 0, 1, 0)
 
         # Apply the beam convolution.
@@ -455,7 +474,7 @@ class imagecube:
                 mask = np.array([convolve_fft(c, kern) for c in mask])
             else:
                 mask = np.array([convolve(c, kern) for c in mask])
-            mask = np.where(mask > 1e-10, 1, 0)
+            mask = np.where(mask > 0.01, 1, 0)
 
         # Return the mask.
         if return_mask:
@@ -468,6 +487,8 @@ class imagecube:
             name = self.path.replace('.fits', '.mask.fits')
         hdu[0].scale('int32')
 
+        # Try to remove the multiple beams.
+        hdu[0].header['CASAMBM'] = False
         # Save the mask.
         try:
             hdu.writeto(name.replace('.fits', '') + '.fits',
@@ -587,8 +608,8 @@ class imagecube:
 
         - Inputs -
 
-        inc:        Inclination of the disk in degrees.
-        PA:         Position angle of the disk in degrees, measured as the
+        inc:        Inclination of the disk in [degrees].
+        PA:         Position angle of the disk in [degrees], measured as the
                     angle between the blue-shifted major-axis and North in an
                     anticlockwise direction.
         x0, y0:     Relative offsets of the centre of the disk in [arcsec].
@@ -610,8 +631,45 @@ class imagecube:
             r *= dist
         return r, np.degrees(theta)
 
+    def brightness_profile(self, rmin=None, rmax=None, nbins=50):
+        """
+        Return the brightness temperature profile in [bunit].
+
+        - Input -
+
+        rmin:       Minimum radial distance in [au] for the fitting.
+        rmax:       Maximum radial distance in [au] for the fitting.
+        nbins:      Number of samples across the radius.
+
+        - Output -
+
+        rpnts:      Radial sampling points.
+        Tb:         Brightness proflie in [bunit]
+        dTb:        Standard deviation in each bin in [bunit]
+        """
+
+        # Define the radial grid to use.
+        if rmin is None:
+            rmin = self.rvals.min()
+        if rmax is None:
+            rmax = self.rvals.max() / np.sqrt(2.)
+        rpnts = np.linspace(rmin, rmax, nbins)
+        rbins = np.linspace(rmin - 0.5 * np.diff(rpnts)[0],
+                            rmax + 0.5 * np.diff(rpnts)[0],
+                            nbins + 1)
+
+        # Bin the profile.
+        Tflat = np.amax(self.data, axis=0).flatten()
+        rflat = self.rvals.flatten()
+        ridxs = np.digitize(rflat, rbins)
+
+        Tb = [np.nanmean(Tflat[ridxs == r]) for r in range(1, rbins.size)]
+        dTb = [np.nanstd(Tflat[ridxs == r]) for r in range(1, rbins.size)]
+        return rpnts, np.squeeze(Tb), np.squeeze(dTb)
+
     def _rotate(self, x, y, PA):
         '''Clockwise rotation about origin by PA [deg].'''
+        PA += 90.
         x_rot = x * np.cos(np.radians(PA)) + y * np.sin(np.radians(PA))
         y_rot = y * np.cos(np.radians(PA)) - x * np.sin(np.radians(PA))
         return x_rot, y_rot
@@ -640,13 +698,13 @@ class imagecube:
         if nbeams > 1.0:
             bmin *= nbeams
             bmaj *= nbeams
-        return Kernel(self._gaussian2D(bmin, bmaj, pa=bpa))
+        return Kernel(self._gaussian2D(bmin, bmaj, bpa).T)
 
     def _gaussian2D(self, dx, dy, PA=0.0):
         """2D Gaussian kernel in pixel coordinates."""
         xm = np.arange(-4*np.nanmax([dy, dx]), 4*np.nanmax([dy, dx])+1)
         x, y = np.meshgrid(xm, xm)
-        x, y = self._rotate(x, y, PA)
+        x, y = self._rotate(x, y, PA - 90.)
         k = np.power(x / dx, 2) + np.power(y / dy, 2)
         return np.exp(-0.5 * k) / 2. / np.pi / dx / dy
 
@@ -656,17 +714,23 @@ class imagecube:
         a_del = fits.getval(fn, 'cdelt3')
         a_pix = fits.getval(fn, 'crpix3')
         a_ref = fits.getval(fn, 'crval3')
-        return (a_ref + (np.arange(a_len) - a_pix + 0.5) * a_del)
+        return (a_ref + (np.arange(a_len) - a_pix + 1.0) * a_del)
 
     def _readvelocityaxis(self, fn):
         """Wrapper for _velocityaxis and _spectralaxis."""
-        if fits.getval(fn, 'ctype3').lower() == 'freq':
+        if 'freq' in fits.getval(fn, 'ctype3').lower():
             specax = self._spectralaxis(fn)
             try:
                 nu = fits.getval(fn, 'restfreq')
             except KeyError:
-                nu = fits.getval(fn, 'restfrq')
-            return (nu - specax) * sc.c / nu
+                try:
+                    nu = fits.getval(fn, 'restfrq')
+                except KeyError:
+                    nu = np.mean(specax)
+            velax = (nu - specax) * sc.c / nu
+            if velax[0] > velax[-1]:
+                velax = velax[::-1]
+            return velax
         else:
             return self._velocityaxis(fn)
 
@@ -680,11 +744,13 @@ class imagecube:
         t_n = -b - np.sqrt(b**2 - 4 * a * c) / 2. / a
         return t_p, t_n
 
-    def _readpositionaxis(self, fn, a=1):
+    def _readpositionaxis(self, fn, a=1, offset=True):
         """Returns the position axis in ["]."""
         if a not in [1, 2]:
             raise ValueError("'a' must be in [0, 1].")
         a_len = fits.getval(fn, 'naxis%d' % a)
         a_del = fits.getval(fn, 'cdelt%d' % a)
         a_pix = fits.getval(fn, 'crpix%d' % a)
-        return 3600. * ((np.arange(1, a_len+1) - a_pix + 0.5) * a_del)
+        if offset:
+            a_pix = 0.5 * a_len
+        return 3600. * ((np.arange(1, a_len+1) - a_pix + 0.0) * a_del)
