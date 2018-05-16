@@ -16,7 +16,11 @@ import scipy.constants as sc
 from astropy.convolution import convolve, convolve_fft
 from astropy.convolution import Kernel
 from scipy.interpolate import interp1d
-import scipy.ndimage as ndimage
+from matplotlib.patches import Ellipse
+from scipy.optimize import curve_fit, minimize
+from prettyplots.prettyplots import sort_arrays, running_stdev
+from prettyplots.gaussianprocesses import Matern32_model
+from detect_peaks import detect_peaks
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -26,11 +30,14 @@ class imagecube:
     msun = 1.989e30
     fwhm = 2. * np.sqrt(2. * np.log(2))
 
-    def __init__(self, path, brightness=None, offset=True, mask=None):
-        """Read in a CASA produced image."""
-        self.path = path
+    def __init__(self, path, T_B=False, offset=True, mask=None,
+                 x0=0.0, y0=0.0, inc=0.0, PA=0.0, vlsr=0.0, dist=1.0):
+        """
+        Read in a CASA produced image.
+        """
 
         # Load the data and mask if appropriate.
+        self.path = path
         self.data = np.squeeze(fits.getdata(path))
         if mask is not None:
             self.mask = np.squeeze(fits.getdata(mask))
@@ -39,11 +46,14 @@ class imagecube:
         self.data *= np.where(self.mask, 1, 0)
 
         # Flip the data array to make sure it is correct.
+        '''
         if self.data.ndim == 2:
             self.data = self.data[::-1, ::-1]
         else:
             self.data = self.data[:, ::-1, ::-1]
+        '''
 
+        # Read in the data axes.
         self.header = fits.getheader(path)
         self.bunit = self.header['bunit']
         self.velax = self._readvelocityaxis(path)
@@ -54,6 +64,8 @@ class imagecube:
         self.nxpix = int(self.xaxis.size)
         self.nypix = int(self.yaxis.size)
         self.dpix = self._pixelscale()
+        self.xaxis += 2.0 * self.dpix
+        self.yaxis -= 1.5 * self.dpix
 
         # Attempt to interpret beam parameters in [arcsec].
         try:
@@ -66,67 +78,17 @@ class imagecube:
             self.bpa = 0.0
 
         # Convert to brightness temperature [K].
-        if brightness is None and self.data.ndim == 3:
-            self.data *= self.Tb
-        elif brightness:
+        if T_B:
             self.data *= self.Tb
 
-        return
+        # Assign already-known parameters.
+        self.x0 = x0
+        self.y0 = y0
+        self.inc = inc
+        self.PA = PA
+        self.vlsr = vlsr
+        self.dist = dist
 
-    def downsample_cube(self, N, center=True, pad=None, save=False, name=None):
-        """
-        Downsample the spectral axis of the cube. TODO: find a way to average
-        and preserve a given central channel.
-
-        - Input Variables -
-
-        N:          Integer value by which to downsample the spectral axis.
-        center:     If the downsampled axis has excess channels, make sure that
-                    these are split evenly, otherwise just average from the
-                    first channel.
-        pad:        Numer of channels to pad at the start.
-        save:       Boolean describing whether the downsampled cube should be
-                    saved. If True, will save with the extension
-                    'downsampled.fits'.
-        name:       Filename for the output file if the default extension is
-                    not desired.
-        """
-
-        # Determine the downsampling parameters.
-        npix, res = np.divmod(self.velax.size, N)
-        if not center:
-            res = 0
-        if pad is None:
-            pad = int(res / 2)
-        elif pad > res:
-            raise ValueError("Too large padding.")
-
-        # Downsample the velocity axis.
-        velax = [np.nanmean(self.velax[pad+i*N:pad+(i+1)*N])
-                 for i in range(npix)]
-        velax = np.squeeze(velax)
-
-        # Downsample the data.
-        data = [np.nanmean(self.data[pad+i*N:pad+(i+1)*N], axis=0)
-                for i in range(npix)]
-        data = np.squeeze(data)
-
-        # Check for array consistency and then update parameters.
-        if data.shape[0] != velax.shape[0]:
-            raise ValueError("Mismatch in spectral dimension.")
-        self.data = data
-        self.velax = velax
-        self.chan = np.mean(np.diff(self.velax))
-
-        # Save and update the header as appropriate.
-        if save or name is not None:
-            name = self._savecube(data, extension='.downsampled', name=name)
-            self._annotate_header(name, 'naxis3', self.velax.size)
-            self._annotate_header(name, 'cdelt3', self.chan)
-            self._annotate_header(name, 'crpix3', 0.5)
-            self._annotate_header(name, 'crval3', self.velax[0])
-            self._annotate_header(name, 'cunit3', 'M/S')
-            self._annotate_header(name, 'ctype3', 'VELO-LSR')
         return
 
     def convolve_cube(self, bmin, bmaj=None, bpa=0.0, fast=True, save=False,
@@ -177,78 +139,117 @@ class imagecube:
             self.bpa = bpa
         return
 
-    def rotate_cube(self, PA, x0=0.0, y0=0.0, save=True, name=None):
+    def radial_profile(self, rpnts=None, rbins=None, x0=None, y0=None,
+                       inc=None, PA=None, collapse='max', statistic='mean',
+                       PA_mask=None, exclude_PA_mask=False, beam_factor=False,
+                       clip_values=None):
         """
-        Rotate the image clockwise (west-ward) PA degrees about (x0, y0). As
-        this is a relatively long process, can save this as a rotated cube.
+        Returns the azimuthally averaged intensity profile. If the data is 3D,
+        then it is collapsed along the spectral axis.
 
-        - Input Variables -
+        - Input -
 
-        PA:         Position angle in [degrees] to rotate the image clockwise.
-                    If saved as a file, this value will be saved in the header.
-        x0, y0:     Coordinates of the pivot point in [arcseconds]. Note that
-                    this will find the nearest pixel value to these rather than
-                    using a sub-pixel location.
-        save:       Boolean describing to save the rotated cube as a new file.
-                    The filename will have the extension '.rotated%.1f.fits'
-                    specifying the angle used for the rotation.
-        name:       Name of the output file if the 'rotated' default extension
-                    is not desired.
-        """
+        rpnts:              Bin centers in [arcsec] for the binning.
+        rbins:              Bin edges in [arcsec] for the binning.
+                            Note: Only specify either rpnts or rbins.
+        x0, y0:             Source centre offset in [arcsec].
+        inc, PA:            Inclination and position angle of the disk, both in
+                            [degrees].
+        collapse:           Method to collapse the cube: 'max', maximum value
+                            along the spectral axis; 'sum', sum along the
+                            spectral axis; 'int', integrated along the spectral
+                            axis.
+        statistic:          Return either the mean and standard deviation for
+                            each annulus with 'mean' or the 16th, 50th and 84th
+                            percentiles with 'percentiles'.
+        PA_mask:            Only include values within [PA_min, PA_max].
+        excxlude_PA_mask:   Exclude the values within [PA_min, PA_max]
+        beam_factor:        Include the number of beams averaged over in the
+                            calculation of the uncertainty.
+        clip_values:        Clip values. If a single value is specified, clip
+                            all absolute values below this, otherwise, if two
+                            values are specified, clip values between these.
 
-        # Rotate the image and replace the data.
-        x0 = abs(self.xaxis - x0).argmin()
-        y0 = abs(self.yaxis - y0).argmin()
-        to_rotate = np.where(np.isfinite(self.data), self.data, 0.0)
-        rotated = [self._rotate_channel(c, x0, y0, PA) for c in to_rotate]
-        self.data = np.squeeze(rotated)
+        - Output -
 
-        # Save the data if appropriate.
-        if save or name is not None:
-            name = self._savecube(self.data, extension='.rotated%.1f' % PA,
-                                  name=name)
-            self._annotate_header(name, 'PA', PA)
-        return
-
-    def azimithallyaverage(self, data=None, rpnts=None, **kwargs):
-        """
-        Azimuthally average a cube.
-
-        - Input Variables -
-
-        data:       Data to deproject, by default is the attached cube.
-        rpnts:      Points to average at in [arcsec]. If none are given, assume
-                    beam spaced points across the radius of the image.
-        deproject:  If the cube first be deprojected before averaging [bool].
-                    By default this is true. If so, the fields required by
-                    self.deprojectspectra are necessary.
+        pnts:               Array of bin centers.
+        y:                  Array of the bin means or medians.
+        dy:                 Array of uncertainties in the bin.
         """
 
-        # Choose the data to azimuthally average.
-        if data is None:
-            data = self.data
+        # Define how to collapse the data.
+        if self.data.ndim > 2:
+            if collapse.lower() not in ['max', 'sum', 'int']:
+                raise ValueError("Must choose collpase method: max, sum, int.")
+            if collapse.lower() == 'max':
+                to_avg = np.amax(self.data, axis=0)
+            elif collapse.lower() == 'sum':
+                to_avg = np.nansum(self.data, axis=0)
+            else:
+                to_avg = np.where(np.isfinite(self.data), self.data, 0.0)
+                to_avg = np.trapz(to_avg, self.velax, axis=0)
         else:
-            if data.shape != self.data.shape:
-                raise ValueError("Unknown data shape.")
+            to_avg = self.data.copy()
+        to_avg = to_avg.flatten()
 
         # Define the points to sample the radial profile at.
-        if rpnts is None:
-            rbins = np.arange(0., self.xaxis.max(), self.bmaj)
-        else:
+        if rbins is not None and rpnts is not None:
+            raise ValueError("Specify either 'rbins' or 'rpnts'.")
+        if rpnts is not None:
             dr = np.diff(rpnts)[0] * 0.5
             rbins = np.linspace(rpnts[0] - dr, rpnts[-1] + dr, len(rpnts) + 1)
-        nbin = rbins.size
+        if rbins is not None:
+            rpnts = np.average([rbins[1:], rbins[:-1]], axis=0)
+        else:
+            rbins = np.arange(0., self.xaxis.max(), 0.25 * self.bmaj)
+            rpnts = np.average([rbins[1:], rbins[:-1]], axis=0)
 
-        # Apply the deprojection if required.
-        if kwargs.get('deproject', True):
-            data = self.deprojectspectra(data=data, save=False, **kwargs)
+        # Apply the deprojection.
+        x0 = x0 if x0 is not None else self.x0
+        y0 = y0 if y0 is not None else self.y0
+        inc = inc if inc is not None else self.inc
+        PA = PA if PA is not None else self.PA
+        rvals, tvals = self.disk_coordinates(x0, y0, inc, PA, dist=1.0)
+        rvals, tvals = rvals.flatten(), tvals.flatten()
+
+        # Mask out values which are not within the specified PA region.
+        if PA_mask is not None:
+            PA_mask = np.squeeze([PA_mask])
+            if len(PA_mask) != 2:
+                raise ValueError("PA_mask but be the PA interval to bin.")
+            mask = np.logical_and(tvals >= PA_mask[0], tvals <= PA_mask[1])
+            if exclude_PA_mask:
+                mask = np.where(mask, False, True)
+            rvals, to_avg = rvals[mask], to_avg[mask]
+
+        # Clip values below a certain value.
+        if clip_values is not None:
+            clip_values = np.squeeze([clip_values])
+            if clip_values.size == 1:
+                mask = abs(to_avg) >= clip_values
+            else:
+                mask = np.logical_or(to_avg <= clip_values[0],
+                                     to_avg >= clip_values[1])
+            rvals, to_avg = rvals[mask], to_avg[mask]
 
         # Apply the averaging.
-        rvals, _ = self._deproject(**kwargs)
-        ridxs = np.digitize(rvals.ravel(), rbins)
-        data = data.reshape((data.shape[0], -1)).T
-        avg = [np.nanmean(data[ridxs == r], axis=0) for r in range(1, nbin)]
-        return np.squeeze(avg)
+        ridxs = np.digitize(rvals, rbins)
+        if statistic.lower() not in ['mean', 'percentiles']:
+            raise ValueError("Must choose statistic: mean or percentiles.")
+        if statistic.lower() == 'mean':
+            y = [np.nanmean(to_avg[ridxs == r]) for r in range(1, rbins.size)]
+            dy = [np.nanstd(to_avg[ridxs == r]) for r in range(1, rbins.size)]
+            y, dy = np.squeeze(y), np.squeeze(dy)
+        else:
+            y = [np.nanpercentile(to_avg[ridxs == r], [16, 50, 84])
+                 for r in range(1, rbins.size)]
+            y = percentiles_to_errors(y)
+            y, dy = y[0], y[1:]
+
+        # Include the correction for the number of beams averaged over.
+        if beam_factor:
+            dy /= np.sqrt(2. * np.pi * rpnts / self.bmaj)
+        return rpnts, y, dy
 
     def deprojectspectra(self, data=None, **kwargs):
         """
@@ -567,10 +568,10 @@ class imagecube:
         """
 
         # Calculate the Keplerian rotation across the whole disk.
-        x_sky, y_sky = np.meshgrid(self.xaxis - x0, self.yaxis - y0)
-        x_rot, y_rot = self._rotate(x_sky, y_sky, PA - 90.)
+        x_sky, y_sky = np.meshgrid(self.xaxis[::-1] + 2.5 * self.dpix - x0,
+                                   self.yaxis - 0.5 * self.dpix - y0)
+        x_rot, y_rot = self._rotate(x_sky, y_sky, PA + 90.)
         t_pos, t_neg = self._solve_quadratic(x_rot, y_rot, inc, psi)
-
         y_disk = y_rot / np.cos(np.radians(inc))
         y_near = y_disk + t_pos * np.sin(np.radians(inc))
         y_far = y_disk + t_neg * np.sin(np.radians(inc))
@@ -602,74 +603,26 @@ class imagecube:
             return v_far
         return v_far, v_near
 
-    def _deproject_polar(self, inc=0.0, PA=0.0, x0=0.0, y0=0.0, dist=None):
+    def disk_coordinates(self, x0=None, y0=None, inc=None, PA=None, dist=1.0):
         """
-        Deproject the attached cube positions to disk coordinates.
-
-        - Inputs -
-
-        inc:        Inclination of the disk in [degrees].
-        PA:         Position angle of the disk in [degrees], measured as the
-                    angle between the blue-shifted major-axis and North in an
-                    anticlockwise direction.
-        x0, y0:     Relative offsets of the centre of the disk in [arcsec].
-        dist:       Distance to the source in [pc].
-
-        - Returns =
-
-        r:          Deprojected radial distance of pixel from the source center
-                    in [au] if `dist` is provided, otherwise in [arcsec].
-        theta:      Polar angle in [deg] of the pixel from the major axis,
-                    measured anticlockwise from the blue-shifted major axis.
+        Convert pixel coordinates to disk polar coordinates.
+        Returns r [au], theta [radians].
+        TODO: why do we need the corrections?
         """
-        x_sky = self.xaxis[None, :] * np.ones(self.nypix)[:, None] - x0
-        y_sky = self.yaxis[:, None] * np.ones(self.nxpix)[None, :] - y0
-        x_rot, y_rot = self._rotate(x_sky, y_sky, PA)
+
+        x0 = x0 if x0 is not None else self.x0
+        y0 = y0 if y0 is not None else self.y0
+        inc = inc if inc is not None else self.inc
+        PA = PA if PA is not None else self.PA
+
+        x, y = np.meshgrid(self.xaxis[::-1] - self.dpix - x0, self.yaxis - y0)
+        x_sky, y_sky = x * dist, y * dist
+        x_rot, y_rot = self._rotate(x_sky, y_sky, PA + 90.)
         x_dep, y_dep = self._incline(x_rot, y_rot, inc)
-        r, theta = np.hypot(x_dep, y_dep), np.arctan2(y_dep, x_dep)
-        if dist is not None:
-            r *= dist
-        return r, np.degrees(theta)
-
-    def brightness_profile(self, rmin=None, rmax=None, nbins=50):
-        """
-        Return the brightness temperature profile in [bunit].
-
-        - Input -
-
-        rmin:       Minimum radial distance in [au] for the fitting.
-        rmax:       Maximum radial distance in [au] for the fitting.
-        nbins:      Number of samples across the radius.
-
-        - Output -
-
-        rpnts:      Radial sampling points.
-        Tb:         Brightness proflie in [bunit]
-        dTb:        Standard deviation in each bin in [bunit]
-        """
-
-        # Define the radial grid to use.
-        if rmin is None:
-            rmin = self.rvals.min()
-        if rmax is None:
-            rmax = self.rvals.max() / np.sqrt(2.)
-        rpnts = np.linspace(rmin, rmax, nbins)
-        rbins = np.linspace(rmin - 0.5 * np.diff(rpnts)[0],
-                            rmax + 0.5 * np.diff(rpnts)[0],
-                            nbins + 1)
-
-        # Bin the profile.
-        Tflat = np.amax(self.data, axis=0).flatten()
-        rflat = self.rvals.flatten()
-        ridxs = np.digitize(rflat, rbins)
-
-        Tb = [np.nanmean(Tflat[ridxs == r]) for r in range(1, rbins.size)]
-        dTb = [np.nanstd(Tflat[ridxs == r]) for r in range(1, rbins.size)]
-        return rpnts, np.squeeze(Tb), np.squeeze(dTb)
+        return np.hypot(x_dep, y_dep), np.arctan2(y_dep, x_dep)
 
     def _rotate(self, x, y, PA):
         '''Clockwise rotation about origin by PA [deg].'''
-        PA += 90.
         x_rot = x * np.cos(np.radians(PA)) + y * np.sin(np.radians(PA))
         y_rot = y * np.cos(np.radians(PA)) - x * np.sin(np.radians(PA))
         return x_rot, y_rot
@@ -677,14 +630,6 @@ class imagecube:
     def _incline(self, x, y, inc):
         '''Incline the image by angle inc [deg] about x-axis.'''
         return x, y / np.cos(np.radians(inc))
-
-    def _rotate_channel(self, chan, x0, y0, PA):
-        """Rotate the channel clockwise by PA about (x0, y0)."""
-        dy = [self.nypix - y0, y0]
-        dx = [self.nxpix - x0, x0]
-        chan_padded = np.pad(chan, [dy, dx], 'constant')
-        chan_rotated = ndimage.rotate(chan_padded, PA, reshape=False)
-        return chan_rotated[dy[0]:-dy[1], dx[0]:-dx[1]]
 
     def _beamkernel(self, bmaj=None, bmin=None, bpa=None, nbeams=1.0):
         """Returns the 2D Gaussian kernel. CHECK ROTATION."""
@@ -698,13 +643,13 @@ class imagecube:
         if nbeams > 1.0:
             bmin *= nbeams
             bmaj *= nbeams
-        return Kernel(self._gaussian2D(bmin, bmaj, bpa).T)
+        return Kernel(self._gaussian2D(bmin, bmaj, bpa + 90.).T)
 
     def _gaussian2D(self, dx, dy, PA=0.0):
         """2D Gaussian kernel in pixel coordinates."""
         xm = np.arange(-4*np.nanmax([dy, dx]), 4*np.nanmax([dy, dx])+1)
         x, y = np.meshgrid(xm, xm)
-        x, y = self._rotate(x, y, PA - 90.)
+        x, y = self._rotate(x, y, PA)
         k = np.power(x / dx, 2) + np.power(y / dy, 2)
         return np.exp(-0.5 * k) / 2. / np.pi / dx / dy
 
@@ -753,4 +698,264 @@ class imagecube:
         a_pix = fits.getval(fn, 'crpix%d' % a)
         if offset:
             a_pix = 0.5 * a_len
-        return 3600. * ((np.arange(1, a_len+1) - a_pix + 0.0) * a_del)
+        return 3600. * ((np.arange(1, a_len+1) - a_pix + 1.0) * a_del)
+
+    def plotbeam(self, ax, dx=0.15, dy=0.15, **kwargs):
+        """Plot the synthesized beam."""
+        beam = Ellipse(ax.transLimits.inverted().transform((dx, dy)),
+                       width=self.bmin, height=self.bmaj, angle=-self.bpa,
+                       fill=False, hatch=kwargs.get('hatch', '////////'),
+                       lw=kwargs.get('linewidth', kwargs.get('lw', 1)),
+                       color=kwargs.get('color', kwargs.get('c', 'k')))
+        ax.add_patch(beam)
+        return
+
+    def emission_surface(self, x0=None, y0=None, inc=None, clip=0.0,
+                         method='GP', r_max=None, rbins=None, dist=1.0):
+        """
+        Derive the emission surface following Pinte et al. (2018), however use
+        a Gaussian Process model rather than binning the data.
+
+        - Input -
+
+        x0, y0:             Source centre offset in [arcsec].
+        inc:                Inclination of the disk in [degrees].
+        clip:               Threshold used for clipping points. Only points
+                            above <y> - clip * <dy> will be considered in the
+                            emisison profile where <dy> is the noise on the
+                            azimuthally averaged intensity profile.
+        method:             Method for creating the radial profile. 'GP' will
+                            use a Gaussian Process using a Matern 3/2 kernel.
+                            'binning' will bin the points, 'raw' will return
+                            the clipped pixels from _get_emission_surface().
+        dist:               Distance to the source in [pc]. A dist = 1 will
+                            return the values in [arcsec].
+        """
+
+        # Measure the radial intensity (/brightness) profile.
+        x, y, dy = self.radial_profile(collapse='max', beam_factor=True)
+
+        # Infer the emission surface.
+        x0 = x0 if x0 is not None else self.x0
+        y0 = y0 if y0 is not None else self.y0
+        inc = inc if inc is not None else self.inc
+        emission_surface = self._get_emission_surface(x0, y0, inc, r_max=r_max)
+
+        # Clip the data based on radius and intensity.
+        r_max = r_max if r_max is not None else self.xaxis.max()
+        clip = interp1d(x, y - clip * dy, fill_value='extrapolate')
+        mask = emission_surface[2] >= clip(emission_surface[0])
+        mask *= emission_surface[0] <= r_max
+        r, z, Tb = emission_surface[:, mask]
+
+        # Make the radial profile.
+        if method.lower() not in ['gp', 'binned', 'raw']:
+            raise ValueError("method must be 'gp', 'binned' or None.")
+        if method.lower() == 'gp':
+            r, z = sort_arrays(r, z)
+            dz = running_stdev(z, window=(self.bmaj / np.nanmean(np.diff(r))))
+            r, z, dz = Matern32_model(r, z, dz, jitter=True, return_var=True)
+        elif method.lower() == 'binned':
+            if rbins is None:
+                rbins = np.arange(0, r_max, 0.25 * self.bmaj)
+            ridxs = np.digitize(r, rbins)
+            dz = [np.nanstd(z[ridxs == rr]) for rr in range(1, rbins.size)]
+            z = [np.nanmean(z[ridxs == rr]) for rr in range(1, rbins.size)]
+            z, dz = np.squeeze(z), np.squeeze(dz)
+            r = np.average([rbins[1:], rbins[:-1]], axis=0)
+        else:
+            r, z = sort_arrays(r, z)
+            dz = running_stdev(z, window=(self.bmaj / np.nanmean(np.diff(r))))
+        return r * dist, z * dist, dz * dist
+
+    def _get_emission_surface(self, x0, y0, inc, r_max=None, mph=0.0, mpd=0.0):
+        """
+        Infer a list of [r, z, Tb] coordiantes for the emission surface.
+
+        - Input Variables -
+
+        x0, y0:     Coordinates [arcseconds] of the centre of the disk.
+        inc         Inclination [degrees] of the disk.
+        r_max:      Maximum radius to apply fitting to.
+        mph:        Minimum peak height in [K]. If None, use all pixels.
+        mpd:        Minimum distance between peaks in [arcseconds].
+
+        - Output -
+
+        coords:     A [3 x N] array where N is the number of successfully found
+                    ellipses. Each ellipse yields a (r, z, Tb) trio. Distances
+                    are in [au] (coverted using the provided distance) and the
+                    brightness temperature in [K].
+        """
+
+        coords = []
+        r_max = self.xaxis.max() if r_max is None else r_max
+        for c, channel in enumerate(self.data):
+
+            # Avoid empty channels.
+            if np.nanmax(channel) < mph:
+                continue
+
+            # Cycle through the columns in the channel.
+            for xidx in range(self.nxpix):
+
+                # Skip rows if appropriate.
+                if abs(self.xaxis[xidx] - x0) > r_max:
+                    continue
+                if np.nanmax(channel[:, xidx]) < mph:
+                    continue
+
+                # Find the indices of the two largest peaks.
+                yidx = detect_peaks(channel[:, xidx], mph=mph, mpd=mpd)
+                if len(yidx) < 2:
+                    continue
+                pidx = channel[yidx, xidx].argsort()[::-1]
+                yidx = yidx[pidx][:2]
+
+                # Convert indices to polar coordinates.
+                x = self.xaxis[xidx]
+                yf, yn = self.yaxis[yidx]
+                yc = 0.5 * (yf + yn)
+                dy = max(yf - yc, yn - yc) / np.cos(np.radians(inc))
+                r = np.hypot(x - x0, dy)
+                z = abs(yc - y0) / np.sin(np.radians(inc))
+
+                # Add coordinates to list. Apply some filtering.
+                if np.isnan(r) or np.isnan(z) or z > r / 2.:
+                    continue
+
+                # Include the brightness temperature.
+                Tb = channel[yidx[0], xidx]
+
+                # Include the coordinates to the list.
+                coords += [[r, z, Tb]]
+        return np.squeeze(coords).T
+
+    def rotation_profile(self, rpnts=None, rbins=None, x0=None, y0=None,
+                         inc=None, PA=None, method='dV', resample=True,
+                         verbose=True):
+        """
+        Calculate the rotation profile from the spectra width.
+        """
+
+        # Find the pixel coordinates.
+        x0 = x0 if x0 is not None else self.x0
+        y0 = y0 if y0 is not None else self.y0
+        inc = inc if inc is not None else self.inc
+        PA = PA if PA is not None else self.PA
+        rvals, tvals = self.disk_coordinates(x0, y0, inc, PA, dist=1.0)
+        rvals, tvals = rvals.flatten(), tvals.flatten()
+
+        # Flatten the data to [velocity, nxpix * nypix].
+        dvals = self.data.copy().reshape(self.data.shape[0], -1)
+        if dvals.shape != (self.velax.size, self.nxpix * self.nypix):
+            raise ValueError("Wrong data shape.")
+
+        # Calculate the radial binning.
+        if rpnts is not None and rbins is not None:
+            raise ValueError("Only specify either 'rpnts' or 'rbins'.")
+        if rpnts is None and rbins is None:
+            rbins = np.arange(0, self.xaxis.max(), 0.25 * self.bmaj)
+            rpnts = np.average([rbins[1:], rbins[:-1]], axis=0)
+        elif rpnts is None:
+            rpnts = np.average([rbins[1:], rbins[:-1]], axis=0)
+        else:
+            dr = 0.5 * np.average(np.diff(rpnts))
+            rbins = np.linspace(rpnts[0] - dr, rpnts[-1] + dr, rpnts.size + 1)
+
+        # Make sure the method is selected.
+        if method.lower() not in ['dv', 'gp']:
+            raise ValueError("Method must be 'dV' or 'GP'.")
+
+        # Cycle through each annulus and apply the method.
+        v_rot = []
+        ridxs = np.digitize(rvals, rbins)
+        for r in range(1, rbins.size):
+
+            if verbose:
+                print("Running %d / %d." % (r, rpnts.size))
+
+            spectra = dvals[:, ridxs == r].T
+            angles = tvals[ridxs == r]
+
+            if method.lower() == 'dv':
+                v_rot += [self._vrot_from_dV(spectra, angles, resample)]
+            elif method.lower() == 'gp':
+                v_rot += [self._vrot_from_GP(spectra, angles, resample)]
+
+        return rpnts, np.squeeze(v_rot)
+
+    def _vrot_from_dV(self, spectra, angles, resample=True):
+        """
+        Calculate v_rot through minimizing the width.
+        """
+        vrot, _ = self._estimate_vrot(spectra, angles)
+        args = (spectra, angles, resample)
+        res = minimize(self._deprojected_width, vrot, args=args,
+                       method='Nelder-Mead')
+        return abs(res.x[0]) if res.success else np.nan
+
+    def _estimate_vrot(self, spectra, angles):
+        """Estimate the rotation velocity from fitting a SHO to peaks."""
+        vpeaks = np.take(self.velax, np.argmax(spectra, axis=1))
+        p0 = [0.5 * (np.max(vpeaks) - np.min(vpeaks)), np.mean(vpeaks)]
+        try:
+            popt, _ = curve_fit(offsetSHO, angles, vpeaks, p0=p0, maxfev=10000)
+        except:
+            popt = p0
+        return np.squeeze(popt)
+
+    def _deprojected_width(self, vrot, spectra, angles, resample=True):
+        """Width of the deprojected line profile."""
+
+        # Deproject the spectrum.
+        x, y = self._deprojected_spectrum(spectra, angles, vrot, resample)
+
+        # Estimate starting positions for the Gaussian fit.
+        Tb = np.max(y)
+        dV = np.trapz(y, x) / Tb / np.sqrt(np.pi)
+        x0 = x[y.argmax()]
+        p0 = [Tb, dV, x0]
+
+        # Return the Gaussian fit.
+        try:
+            return curve_fit(gaussian, x, y, p0=p0, maxfev=10000)[0][1]
+        except:
+            return 1e50
+
+    def _deprojected_spectrum(self, spectra, angles, vrot, resample=True):
+        """Collapsed deprojected spectrum."""
+        deprojected = self._deproject_spectra(spectra, angles, vrot)
+        if resample:
+            return self.velax, np.nanmean(deprojected, axis=0)
+        velax = self.velax[None, :] * np.ones(deprojected.shape)
+        return sort_arrays(velax.flatten(), deprojected.flatten())
+
+    def _deproject_spectra(self, spectra, angles, vrot):
+        """Deproject all the spectra given the rotation velocity."""
+        deprojected = [interp1d(self.velax - vrot * np.cos(angle), spectrum,
+                                fill_value='extrapolate')(self.velax)
+                       for spectrum, angle in zip(spectra, angles)]
+        return np.squeeze(deprojected)
+
+
+def gaussian(x, x0, dx, A):
+    """Gaussian function with Doppler width."""
+    return A * np.exp(-np.power((x-x0) / dx, 2))
+
+
+def offsetSHO(theta, A, y0):
+    """Simple harmonic oscillator with an offset."""
+    return A * np.cos(theta) + y0
+
+
+def percentiles_to_errors(pcnts):
+    """Covert [16, 50, 84]th percentiles to [y, -dy, +dy]."""
+    pcnts = np.squeeze([pcnts])
+    if pcnts.ndim > 1:
+        if pcnts.shape[1] != 3 and pcnts.shape[0] == 3:
+            pcnts = pcnts.T
+        if pcnts.shape[1] != 3:
+            raise TypeError("Must provide a Nx3 or 3xN array.")
+        return np.array([[p[1], p[1]-p[0], p[2]-p[1]] for p in pcnts]).T
+    return np.squeeze([pcnts[1], pcnts[1]-pcnts[0], pcnts[2]-pcnts[1]])
