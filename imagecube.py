@@ -201,7 +201,7 @@ class imagecube:
         if rbins is not None:
             rpnts = np.average([rbins[1:], rbins[:-1]], axis=0)
         else:
-            rbins = np.arange(0., self.xaxis.max(), 0.25 * self.bmaj)
+            rbins = np.arange(0, self.xaxis.max(), 0.25 * self.bmaj)[1:]
             rpnts = np.average([rbins[1:], rbins[:-1]], axis=0)
 
         # Apply the deprojection.
@@ -248,7 +248,15 @@ class imagecube:
 
         # Include the correction for the number of beams averaged over.
         if beam_factor:
-            dy /= np.sqrt(2. * np.pi * rpnts / self.bmaj)
+            n_beams = 2. * np.pi * rpnts / self.bmaj
+            if PA_mask is not None:
+                arc = (PA_mask[1] - PA_mask[0]) / 2. / np.pi
+                arc = max(0.0, min(arc, 1.0))
+                if exclude_PA_mask:
+                    n_beams *= 1. - arc
+                else:
+                    n_beams *= arc
+            dy /= np.sqrt(n_beams)
         return rpnts, y, dy
 
     def deprojectspectra(self, data=None, **kwargs):
