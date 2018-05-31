@@ -265,7 +265,7 @@ class imagecube:
         """Make a Keplerian mask for CLEANing."""
 
         # Pixel coordinates.
-        rvals, tvals = self.disk_coordinates(x0, y0, inc, PA)
+        rvals, tvals = self.disk_coordinates(x0, y0, inc, PA-90.)
         rvals *= dist
 
         # Keplerian rotation profile.
@@ -343,6 +343,23 @@ class imagecube:
         return r_mask * PA_mask
 
     # == Functions to read the data cube axes. == #
+
+    def _clip_cube(self, clip):
+        """Clip the cube to +\- clip arcseconds from the origin."""
+        if self.absolute:
+            raise ValueError("Cannot clip with absolute coordinates.")
+        xa = abs(self.xaxis - clip).argmin()
+        xb = abs(self.xaxis + clip).argmin()
+        ya = abs(self.yaxis - clip).argmin()
+        yb = abs(self.yaxis + clip).argmin()
+        if self.data.ndim == 3:
+            self.data = self.data[:, yb:ya, xa:xb]
+        else:
+            self.data = self.data[yb:ya, xa:xb]
+        self.xaxis = self.xaxis[xa:xb]
+        self.yaxis = self.yaxis[yb:ya]
+        self.nxpix = self.xaxis.size
+        self.nypix = self.yaxis.size
 
     def _readspectralaxis(self):
         """Returns the spectral axis in [Hz] or [m/s]."""

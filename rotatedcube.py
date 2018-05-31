@@ -13,6 +13,7 @@ from cube import imagecube
 from functions import offsetSHO
 from functions import gaussian
 from functions import sort_arrays
+from functions import random_p0
 from functions import running_stdev
 from functions import Matern32_model
 from detect_peaks import detect_peaks
@@ -122,16 +123,29 @@ class rotatedcube(imagecube):
 
         - Inputs -
 
+        include_height: Deproject the pixels taking into account the emission
+                        surface.
         rbins / rpnts:  Provide the radial grid in [arcsec] which you want to
                         bin the spectra into. By default this will span the
                         entire radius range.
-        PA_min / max:
-        resample:       When deprojecting the data, resample it onto the
-                        velocity axis. If True this speeds up computation
-                        considerably. TODO: Check whether this affects fitting.
+        resample:       For method='dV', average the points back down to the
+                        original resolution. This will speed up the fitting.
+        PA_min:         Minimum (relative) position angle to include.
+        PA_max:         Maximum (relative) position angle to include.
+        exclude_PA:     Exclude, rather than include PA_min < PA < PA_mask.
+        method:         Which method to use, either 'dV' or 'GP'.
+        nwalkers:       Number of walkers to use in the MCMC fitting.
+        nburnin:        Number of steps to use for burning in the walkers.
+        nsteps:         Number of steps to use to sample the posterior.
+        plot_walkers:   Plot the samples to check for convergence.
+        plot_corner:    Plot the corner plot to check for covariance.
 
+        - Output -
 
-        - Input -
+        rpnts:          The bin centres of the radial grid.
+        v_rot:          If method='dV' then this is just v_rot in [m/s]. If
+                        method='GP' this is the [16, 50, 84]th percentiles of
+                        the posterior distribution for the GP model.
         """
 
         # Check that the method is working.
@@ -165,7 +179,7 @@ class rotatedcube(imagecube):
                                   exclude_PA=exclude_PA).flatten()
             spectra, angles = dvals[:, mask].T, tvals[mask]
 
-            if method.lower() == 'dV':
+            if method.lower() == 'dv':
                 v_rot += [self._get_vrot_from_width(spectra, angles, resample)]
             else:
                 radius = rbins[r-1:r+1].mean()
@@ -224,10 +238,7 @@ class rotatedcube(imagecube):
 
         # Include some scatter and return.
         p0 = np.array([vrot, rms, np.log(rms), np.log(dV)])
-        print p0
-        dp0 = np.random.randn(int(nwalkers * p0.size))
-        dp0 = dp0.reshape((int(nwalkers), int(p0.size)))
-        return p0[None, :] * (1.0 + scatter * dp0), vrot
+        return random_p0(p0, scatter, nwalkers), vrot
 
     def _get_vrot_from_GP(self, spectra, angles, resample=False, nwalkers=32,
                           nburnin=100, nsteps=100, plot_walkers=False,
@@ -240,10 +251,16 @@ class rotatedcube(imagecube):
         sampler.run_mcmc(p0, nburnin + nsteps)
         samples = sampler.chain[:, -nsteps:]
         samples = samples.reshape(-1, samples.shape[-1])
+
+        # Diagnosis plots.
+        labels = [r'${\rm v_{rot}}$', r'${\rm \sigma_{rms}}$',
+                  r'${\rm ln(\sigma)}$', r'${\rm ln(\rho)}$']
         if plot_walkers:
-            self._plot_walkers(sampler.chain.T, nburnin)
+            self._plot_walkers(sampler.chain.T, nburnin, labels)
         if plot_corner:
-            self._plot_corner(samples)
+            self._plot_corner(samples, labels)
+
+        # Return values.
         return np.percentile(samples, [16, 50, 84], axis=0)
 
     def _log_probability_M32(self, theta, spectra, angles, resample, vkep):
@@ -274,33 +291,6 @@ class rotatedcube(imagecube):
             return -np.inf
         ll = gp.log_likelihood(y, quiet=True)
         return ll if np.isfinite(ll) else -np.inf
-
-    def _plot_walkers(self, samples, nburnin):
-        """Plot the walkers to check if they are burning in."""
-        try:
-            import matplotlib.pyplot as plt
-        except:
-            raise ValueError("Cannot find matplotlib.")
-        labels = [r'${\rm v_{rot}}$', r'${\rm \sigma_{rms}}$',
-                  r'${\rm ln(\sigma)}$', r'${\rm ln(\rho)}$']
-        for sample, label in zip(samples, labels):
-            fig, ax = plt.subplots()
-            for walker in sample.T:
-                ax.plot(walker, alpha=0.1)
-            ax.set_xlabel('Steps')
-            ax.set_ylabel(label)
-            ax.axvline(nburnin, ls=':', color='r')
-
-    def _plot_corner(self, samples):
-        """Plot the corner plot to check for covariances."""
-        try:
-            import corner
-        except:
-            raise ValueError("Cannont find corner.py")
-        labels = [r'${\rm v_{rot}}$', r'${\rm \sigma_{rms}}$',
-                  r'${\rm ln(\sigma)}$', r'${\rm ln(\rho)}$']
-        corner.corner(samples, labels=labels, quantiles=[0.16, 0.5, 0.84],
-                      show_titles=True)
 
     # == Spatial Deprojections == #
 

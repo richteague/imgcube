@@ -180,3 +180,11 @@ def gaussian(x, x0, dx, A):
 def offsetSHO(theta, A, y0):
     """Simple harmonic oscillator with an offset."""
     return A * np.cos(theta) + y0
+
+
+def random_p0(p0, scatter, nwalkers):
+    """Get the starting positions."""
+    p0 = np.squeeze(p0)
+    dp0 = np.random.randn(nwalkers * len(p0)).reshape(nwalkers, len(p0))
+    dp0 = np.where(p0 == 0.0, 1.0, p0)[None, :] * (1.0 + scatter * dp0)
+    return np.where(p0[None, :] == 0.0, dp0 - 1.0, dp0)
