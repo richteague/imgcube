@@ -89,6 +89,9 @@ class imagecube:
         self.vlsr = vlsr
         self.dist = dist
 
+        # Holders for the emission surface. By default this is flat: z(r) = 0.
+        self.surface = np.zeros((3, 5))
+
         return
 
     def convolve_cube(self, bmin, bmaj=None, bpa=0.0, fast=True, save=False,
@@ -744,9 +747,7 @@ class imagecube:
         x, y, dy = self.radial_profile(collapse='max', beam_factor=True)
 
         # Infer the emission surface.
-        x0 = x0 if x0 is not None else self.x0
-        y0 = y0 if y0 is not None else self.y0
-        inc = inc if inc is not None else self.inc
+        x0, y0, inc, _ = self._disk_params(x0, y0, inc, None)
         emission_surface = self._get_emission_surface(x0, y0, inc, r_max=r_max)
 
         # Clip the data based on radius and intensity.
@@ -775,6 +776,74 @@ class imagecube:
             r, z = sort_arrays(r, z)
             dz = running_stdev(z, window=(self.bmaj / np.nanmean(np.diff(r))))
         return r * dist, z * dist, dz * dist
+
+    def set_emission_surface_data(self, surface=None, *args):
+        """
+        Set the emission surface profile which will be used for deprojection.
+        """
+
+        # If already calculated, use this.
+        if surface is not None:
+            surface = np.squeeze(surface)
+            if surface.ndim != 3:
+                raise ValueError("surface must have [r, z, dz].")
+        else:
+            surface = self.emission_surface(*args)
+        self.surface = surface
+        return self.surface
+
+    def get_coordinates(self, niter=5):
+        """
+        For each pixel return the disk polar coordaintes r, theta in [au, rad],
+        respectively. This takes into account the emission surface so returns
+        an array for the near and far cone.
+
+        - Input -
+
+        niter:      Number of iterations to include. More is more accurate but
+                    slower. Not tested which is the best.
+
+        - Returns -
+
+        near:       Deprojected radial positions [au] and position angles [red]
+                    for the near side cone.
+        far:        Deprojected radial positions [au] and position angles [rad]
+                    for the far side cone.
+        """
+        r_near, r_far = None, None
+        for _ in range(niter):
+            r_near, t_near = self._get_coords_single(r_near, 'near')
+            r_far, t_far = self._get_coords_single(r_far, 'far')
+        return [r_near, t_near], [r_far, t_far]
+
+    def _get_coords_single(self, rpnts=None, tilt='north'):
+        """
+        Radius and position angle of each pixel.
+        """
+
+        # Check there are enough radial positions.
+        if rpnts is None:
+            rpnts = np.zeros((self.nypix, self.nxpix))
+        else:
+            if rpnts.shape != (self.nypix, self.nxpix):
+                raise ValueError("'rpnts' must have shape of the image.")
+
+        # What is the tilt of the disk?
+        if tilt.lower() == 'north':
+            tilt = 1.0
+        elif tilt.lower() == 'south':
+            tilt = -1.0
+        else:
+            raise ValueError("'tilt' must be north or south.")
+
+        x0, y0, inc, PA = self._disk_params()
+        if PA != 0.0:
+            raise ValueError("Disk major axis must be aligned with x-axis.")
+
+        x, y = np.meshgrid(self.xaxis[::-1] - self.dpix - x0, self.yaxis - y0)
+        z = tilt * self.interp_surface(rpnts) * np.tan(np.radians(inc))
+        y = y / np.cos(np.radians(inc)) - z
+        return np.hypot(y, x), np.arctan2(y, x)
 
     def _get_emission_surface(self, x0, y0, inc, r_max=None, mph=0.0, mpd=0.0):
         """
@@ -847,10 +916,7 @@ class imagecube:
         """
 
         # Find the pixel coordinates.
-        x0 = x0 if x0 is not None else self.x0
-        y0 = y0 if y0 is not None else self.y0
-        inc = inc if inc is not None else self.inc
-        PA = PA if PA is not None else self.PA
+        x0, y0, inc, PA = self._disk_params(x0, y0, inc, PA)
         rvals, tvals = self.disk_coordinates(x0, y0, inc, PA, dist=1.0)
         rvals, tvals = rvals.flatten(), tvals.flatten()
 
@@ -945,6 +1011,21 @@ class imagecube:
                                 fill_value='extrapolate')(self.velax)
                        for spectrum, angle in zip(spectra, angles)]
         return np.squeeze(deprojected)
+
+    def _interpolate_surface(self, rpnts):
+        """Interpolate the surface for any radius."""
+        z = interp1d(self.surface[0], self.surface[1],
+                     bounds_error=False,
+                     fill_value=(0.0, self.surface[1][-1]))
+        return z(rpnts)
+
+    def _disk_params(self, x0=None, y0=None, inc=None, PA=None):
+        """List of the disk params."""
+        x0 = x0 if x0 is not None else self.x0
+        y0 = y0 if y0 is not None else self.y0
+        inc = inc if inc is not None else self.inc
+        PA = PA if PA is not None else self.PA
+        return x0, y0, inc, PA
 
 
 def gaussian(x, x0, dx, A):
