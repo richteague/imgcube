@@ -10,6 +10,7 @@ import emcee
 import celerite
 import numpy as np
 from cube import imagecube
+import functions
 from functions import offsetSHO
 from functions import gaussian
 from functions import sort_arrays
@@ -24,27 +25,16 @@ from scipy.optimize import curve_fit, minimize
 class rotatedcube(imagecube):
 
     def __init__(self, path, tilt='north', inc=None, mstar=None, dist=None,
-                 x0=0.0, y0=0.0, verbose=True, suppress_warnings=True):
-        """
-        Read in the rotated image cube. The major axis must be aligned with the
-        x-axis for the emission surface to be calculated.
-
-        tilt:   Is the projected rotation axis (which should be along the
-                y-axis) to the 'north' or to the 'south'.
-        """
+                 x0=0.0, y0=0.0, verbose=True, clip=None):
+        """Read in the rotated image cube."""
 
         # Initilize the class.
-        imagecube.__init__(self, path, absolute=False, kelvin=True)
+        imagecube.__init__(self, path, absolute=False, kelvin=True, clip=clip)
         if tilt.lower() not in ['north', 'south']:
             raise ValueError("Must specify tilt as 'north' or 'south'.")
         else:
             self.tilt = tilt.lower()
         self.verbose = verbose
-
-        # Suppres warnings.
-        if suppress_warnings:
-            import warnings
-            warnings.filterwarnings("ignore")
 
         # Get the deprojected pixel values assuming a thin disk.
         self.x0, self.y0 = x0, y0
@@ -56,12 +46,10 @@ class rotatedcube(imagecube):
         if dist is None:
             raise ValueError("WARNING: No distance specified.")
         self.dist = dist
-        self.rdisk, self.tdisk = self.disk_coordinates(x0=self.x0, y0=self.y0,
-                                                       inc=self.inc, PA=0.0)
         if mstar is None:
             raise ValueError("WARNING: No stellar mass specified.")
-        else:
-            self.mstar = mstar
+        self.mstar = mstar
+        self.rdisk, self.tdisk = self.disk_coordinates(x0, y0, self.inc, 0.0)
 
         # Define the surface.
         self.rbins, self.rvals = self._radial_sampling()
@@ -256,9 +244,9 @@ class rotatedcube(imagecube):
         labels = [r'${\rm v_{rot}}$', r'${\rm \sigma_{rms}}$',
                   r'${\rm ln(\sigma)}$', r'${\rm ln(\rho)}$']
         if plot_walkers:
-            self._plot_walkers(sampler.chain.T, nburnin, labels)
+            functions.plot_walkers(sampler.chain.T, nburnin, labels)
         if plot_corner:
-            self._plot_corner(samples, labels)
+            functions.plot_corner(samples, labels)
 
         # Return values.
         return np.percentile(samples, [16, 50, 84], axis=0)
@@ -281,6 +269,12 @@ class rotatedcube(imagecube):
 
         # Generate the Gaussian Process model and return log-likelihood.
         x, y = self._deprojected_spectrum(spectra, angles, vrot, resample)
+
+        # Remove pesky points.
+        mask = np.percentile(x, [25, 75])
+        mask = np.logical_and(x > mask[0], x < mask[1])
+        x, y = x[mask], y[mask]
+
         k_noise = celerite.terms.JitterTerm(log_sigma=np.log(noise))
         k_line = celerite.terms.Matern32Term(log_sigma=lnsigma, log_rho=lnrho)
         kernel = k_noise + k_line

@@ -22,8 +22,14 @@ class imagecube:
     msun = 1.988e30
     fwhm = 2. * np.sqrt(2 * np.log(2))
 
-    def __init__(self, path, absolute=False, kelvin=True):
+    def __init__(self, path, absolute=False, kelvin=True, clip=None,
+                 suppress_warnings=True):
         """Load up an image cube."""
+
+        # Suppres warnings.
+        if suppress_warnings:
+            import warnings
+            warnings.filterwarnings("ignore")
 
         # Read in the data and header.
         self.path = os.path.expanduser(path)
@@ -68,6 +74,10 @@ class imagecube:
             if self.data.ndim == 2:
                 print("WARNING: Converting to Kelvin.")
             self.data *= self.jy2k
+
+        # Clip the clube down to a smaller field of view.
+        if clip is not None:
+            self._clip_cube(clip)
 
         return
 
@@ -250,12 +260,12 @@ class imagecube:
         return convolve(image, kernel)
 
     def convolve_cube(self, bmaj=None, bmin=None, bpa=None, nbeams=1.0,
-                      fast=True, cube=None):
+                      fast=True, data=None):
         """Convolve the cube with a 2D Gaussian beam."""
-        if cube is None:
-            cube = self.data
+        if data is None:
+            data = self.data
         kernel = self._beamkernel(bmaj=bmaj, bmin=bmin, bpa=bpa, nbeams=nbeams)
-        convolved_cube = [self._convolve_image(c, kernel, fast) for c in cube]
+        convolved_cube = [self._convolve_image(c, kernel, fast) for c in data]
         return np.squeeze(convolved_cube)
 
     # == Functions to write a Keplerian mask for CLEANing. == #
@@ -290,14 +300,38 @@ class imagecube:
         vkep = np.ones(self.data.shape) * vkep[None, :, :]
         return np.where(abs(mask - vkep) <= dV, 1., 0.)
 
-    def write_keplerian_mask(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, mstar=1.0,
-                             rout=None, rin=None, dist=100., vlsr=0.0, dV=250.,
-                             nbeams=0.0):
+    def CLEAN_mask(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, mstar=1.0, rout=None,
+                   rin=None, dist=100., vlsr=0.0, dV=250., nbeams=0.0,
+                   fname=None, fast=True, return_mask=False):
         """Save a CASA readable mask using the spectral information."""
-        mask = self._keplerian_mask(x0=x0, y0=y0, inc=inc, PA=PA, mstar=mstar,
-                                    rout=rout, rin=rin, dist=dist, vlsr=vlsr,
-                                    dV=dV)
-        return mask
+
+        # Account for hyperfine components (i.e. multile vlsrs).
+        vlsr = np.atleast_1d(vlsr)
+        mask = [self._keplerian_mask(x0=x0, y0=y0, inc=inc, PA=PA, mstar=mstar,
+                                     rout=rout, rin=rin, dist=dist, vlsr=v,
+                                     dV=dV) for v in vlsr]
+        mask = np.average(mask, axis=0)
+
+        # Include the beam smearing.
+        if nbeams > 0.0:
+            mask = self.convolve_cube(nbeams=nbeams, cube=mask, fast=fast)
+
+        # Return the mask if requested.
+        if return_mask:
+            return mask
+
+        # Otherwise, save as a new FITS cube.
+        if fname is None:
+            fname = self.path.replace('.fits', '.mask.fits')
+        hdu = fits.open(self.path)
+        hdu[0].data = mask
+        hdu[0].scale('int16')  # Might need to be int32?
+        try:
+            hdu.writeto(fname.replace('.fits', '') + '.fits',
+                        overwrite=True, output_verify='fix')
+        except TypeError:
+            hdu.writeto(fname.replace('.fits', '') + '.fits',
+                        clobber=True, output_verify='fix')
 
     # == Functions to deproject the pixel coordinates. == #
 

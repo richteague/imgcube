@@ -2,7 +2,7 @@
 Class for fitting the first moment maps.
 """
 
-import plotting
+import functions
 import numpy as np
 from cube import imagecube
 from functions import random_p0
@@ -10,10 +10,9 @@ from functions import random_p0
 
 class firstmomentcube(imagecube):
 
-    def __init__(self, path, mstar=None, inc=None, dist=None, clip=None,
-                 suppress_warnings=True):
+    def __init__(self, path, mstar=None, inc=None, dist=None, clip=None):
         """Read in the first moment map."""
-        imagecube.__init__(self, path, absolute=False, kelvin=False)
+        imagecube.__init__(self, path, absolute=False, kelvin=False, clip=clip)
         if mstar is None:
             raise ValueError("WARNING: Must specify mstar [Msun].")
         self.mstar = mstar
@@ -25,14 +24,7 @@ class firstmomentcube(imagecube):
         self.dist = dist
         if self.data.ndim != 2:
             raise ValueError("WARNING: Not a 2D image.")
-        if clip is not None:
-            self._clip_cube(clip)
         self.mask = np.isfinite(self.data)
-
-        # Suppres warnings.
-        if suppress_warnings:
-            import warnings
-            warnings.filterwarnings("ignore")
 
     def fit_keplerian(self, p0=None, fit_Mstar=True, beam=True, r_min=None,
                       r_max=None, nwalkers=128, nburnin=200, nsteps=50,
@@ -68,9 +60,9 @@ class firstmomentcube(imagecube):
         labels = [r'$x_0$', r'$y_0$', r'$M_{\star}$' if fit_Mstar else r'$i$',
                   r'${\rm PA}$', r'$v_{\rm LSR}$']
         if plot_walkers:
-            plotting.plot_walkers(sampler.chain.T, nburnin, labels)
+            functions.plot_walkers(sampler.chain.T, nburnin, labels)
         if plot_corner:
-            plotting.plot_corner(samples, labels)
+            functions.plot_corner(samples, labels)
 
         # Return the fits.
         if return_samples:
