@@ -218,3 +218,14 @@ def random_p0(p0, scatter, nwalkers):
     dp0 = np.random.randn(nwalkers * len(p0)).reshape(nwalkers, len(p0))
     dp0 = np.where(p0 == 0.0, 1.0, p0)[None, :] * (1.0 + scatter * dp0)
     return np.where(p0[None, :] == 0.0, dp0 - 1.0, dp0)
+
+
+def solve_quadratic(x, y, inc_in, psi_in):
+    """Solve Eqn.(5) from Rosenfeld et al. (2013)."""
+    inc, psi = np.radians(inc_in), np.radians(psi_in)
+    a = np.cos(2.*inc) + np.cos(2.*psi)
+    b = -4. * np.sin(psi)**2 * y * np.tan(inc)
+    c = -2. * np.sin(psi)**2 * (x**2 + np.power(y / np.cos(inc), 2))
+    t_p = -b + np.sqrt(b**2 - 4 * a * c) / 2. / a
+    t_n = -b - np.sqrt(b**2 - 4 * a * c) / 2. / a
+    return t_p, t_n

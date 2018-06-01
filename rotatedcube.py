@@ -217,7 +217,8 @@ class rotatedcube(imagecube):
 
         # Check that the rotation velocity is positive.
         if vrot < 0.0:
-            raise ValueError("Blue shifted axis must be East for GP.")
+            print("WARNING: Negative rotation velocity found.")
+            print("\t Check blue shifted side aligned with East.")
 
         # Derive properties of the line.
         x, y = self._deprojected_spectrum(spectra, angles, vrot)

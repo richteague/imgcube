@@ -9,6 +9,7 @@ Things still to do:
 
 import os
 import numpy as np
+import functions
 from astropy.io import fits
 import scipy.constants as sc
 from astropy.convolution import Kernel
@@ -270,6 +271,33 @@ class imagecube:
 
     # == Functions to write a Keplerian mask for CLEANing. == #
 
+    def _keplerian_profile_psi(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0,
+                               mstar=1.0, rout=None, rin=None, dist=100.,
+                               vlsr=0.0, psi=0.0):
+        """Keplerian profile including a conical emission surface."""
+
+        # Pixel coordinates.
+        near, far = self.disk_coordinates_psi(x0, y0, inc, PA-90., psi)
+
+        # Near side rotation.
+        v_near = np.sqrt(sc.G * mstar * self.msun / near[0] / sc.au / dist)
+        v_near *= np.sin(np.radians(inc)) * np.cos(near[1])
+        v_near += vlsr
+
+        # Far side rotation.
+        v_far = np.sqrt(sc.G * mstar * self.msun / far[0] / sc.au / dist)
+        v_far *= np.sin(np.radians(inc)) * np.cos(far[1])
+        v_far += vlsr
+
+        # Clip inner and outer regions before returning.
+        if rin is not None:
+            v_near = np.where(near[0] < rin, np.nan, v_near)
+            v_far = np.where(far[0] < rin, np.nan, v_far)
+        if rout is not None:
+            v_near = np.where(near[0] > rout, np.nan, v_near)
+            v_far = np.where(far[0] > rout, np.nan, v_far)
+        return v_near, v_far
+
     def _keplerian_profile(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, mstar=1.0,
                            rout=None, rin=None, dist=100., vlsr=0.0):
         """Make a Keplerian mask for CLEANing."""
@@ -291,30 +319,41 @@ class imagecube:
         return vkep
 
     def _keplerian_mask(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, mstar=1.0,
-                        rout=None, rin=None, dist=100, vlsr=0.0, dV=250.):
+                        rout=None, rin=None, dist=100, vlsr=0.0, dV=250.,
+                        psi=0.0):
         """Generate the Keplerian mask as a cube. dV is FWHM of line."""
         mask = np.ones(self.data.shape) * self.velax[:, None, None]
-        vkep = self._keplerian_profile(x0=x0, y0=y0, inc=inc, PA=PA,
-                                       mstar=mstar, rout=rout, rin=rin,
-                                       dist=dist, vlsr=vlsr)
-        vkep = np.ones(self.data.shape) * vkep[None, :, :]
-        return np.where(abs(mask - vkep) <= dV, 1., 0.)
+
+        if psi == 0.0:
+            vkep = self._keplerian_profile(x0=x0, y0=y0, inc=inc, PA=PA,
+                                           mstar=mstar, rout=rout, rin=rin,
+                                           dist=dist, vlsr=vlsr)
+            vkep = abs(mask - np.ones(self.data.shape) * vkep[None, :, :])
+            return np.where(vkep <= dV, 1., 0.)
+
+        vkep = self._keplerian_profile_psi(x0=x0, y0=y0, inc=inc, PA=PA,
+                                           mstar=mstar, rout=rout, rin=rin,
+                                           dist=dist, vlsr=vlsr, psi=psi)
+        vkep1 = abs(mask - np.ones(self.data.shape) * vkep[0][None, :, :])
+        vkep2 = abs(mask - np.ones(self.data.shape) * vkep[1][None, :, :])
+        return np.where(np.logical_or(vkep1 <= dV, vkep2 <= dV), 1., 0.)
 
     def CLEAN_mask(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, mstar=1.0, rout=None,
-                   rin=None, dist=100., vlsr=0.0, dV=250., nbeams=0.0,
+                   rin=None, dist=100., vlsr=0.0, dV=250., nbeams=0.0, psi=0.0,
                    fname=None, fast=True, return_mask=False):
         """Save a CASA readable mask using the spectral information."""
 
-        # Account for hyperfine components (i.e. multile vlsrs).
+        # Account for hyperfine components and emission surfaces.
         vlsr = np.atleast_1d(vlsr)
+        psis = [0.0] if psi is None else np.arange(0.0, psi, 2.0)
         mask = [self._keplerian_mask(x0=x0, y0=y0, inc=inc, PA=PA, mstar=mstar,
                                      rout=rout, rin=rin, dist=dist, vlsr=v,
-                                     dV=dV) for v in vlsr]
-        mask = np.average(mask, axis=0)
+                                     dV=dV, psi=p) for v in vlsr for p in psis]
+        mask = np.where(np.sum(mask, axis=0) > 0, 1, 0)
 
         # Include the beam smearing.
         if nbeams > 0.0:
-            mask = self.convolve_cube(nbeams=nbeams, cube=mask, fast=fast)
+            mask = self.convolve_cube(nbeams=nbeams, data=mask, fast=fast)
 
         # Return the mask if requested.
         if return_mask:
@@ -334,6 +373,21 @@ class imagecube:
                         clobber=True, output_verify='fix')
 
     # == Functions to deproject the pixel coordinates. == #
+
+    def disk_coordinates_psi(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, psi=0.0):
+        """
+        Deprojected pixel coordinates in [arcsec, radians]. Takes into account
+        a convical emission surface as in Rosenfeld et al. (2013).
+        """
+        x_sky, y_sky = np.meshgrid(self.xaxis[::-1] - x0, self.yaxis - y0)
+        x_rot, y_rot = self._rotate(x_sky, y_sky, PA + 90.)
+        t_pos, t_neg = functions.solve_quadratic(x_rot, y_rot, inc, psi)
+        y_disk = y_rot / np.cos(np.radians(inc))
+        y_near = y_disk + t_pos * np.sin(np.radians(inc))
+        y_far = y_disk + t_neg * np.sin(np.radians(inc))
+        r_near, r_far = np.hypot(x_rot, y_near), np.hypot(x_rot, y_far)
+        t_near, t_far = np.arctan2(y_near, x_rot), np.arctan2(y_far, x_rot)
+        return [r_near, t_near], [r_far, t_far]
 
     def disk_coordinates(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0):
         """
