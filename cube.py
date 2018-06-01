@@ -278,14 +278,16 @@ class imagecube:
 
         # Pixel coordinates.
         near, far = self.disk_coordinates_psi(x0, y0, inc, PA-90., psi)
+        near[0] *= dist
+        far[0] *= dist
 
         # Near side rotation.
-        v_near = np.sqrt(sc.G * mstar * self.msun / near[0] / sc.au / dist)
+        v_near = np.sqrt(sc.G * mstar * self.msun / near[0] / sc.au)
         v_near *= np.sin(np.radians(inc)) * np.cos(near[1])
         v_near += vlsr
 
         # Far side rotation.
-        v_far = np.sqrt(sc.G * mstar * self.msun / far[0] / sc.au / dist)
+        v_far = np.sqrt(sc.G * mstar * self.msun / far[0] / sc.au)
         v_far *= np.sin(np.radians(inc)) * np.cos(far[1])
         v_far += vlsr
 
