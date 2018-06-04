@@ -347,11 +347,14 @@ class imagecube:
 
         # Account for hyperfine components and emission surfaces.
         vlsr = np.atleast_1d(vlsr)
-        psis = [0.0] if psi is None else np.arange(0.0, psi, 2.0)
+        psis = [0.0] if psi == 0.0 else np.arange(0.0, psi, 2.0)
         mask = [self._keplerian_mask(x0=x0, y0=y0, inc=inc, PA=PA, mstar=mstar,
                                      rout=rout, rin=rin, dist=dist, vlsr=v,
                                      dV=dV, psi=p) for v in vlsr for p in psis]
-        mask = np.where(np.sum(mask, axis=0) > 0, 1, 0)
+        mask = np.nansum(mask, axis=0)
+        mask = np.where(mask > 0, 1, 0)
+        if mask.shape != self.data.shape:
+            raise ValueError("Mask shape is not the same as the data.")
 
         # Include the beam smearing.
         if nbeams > 0.0:

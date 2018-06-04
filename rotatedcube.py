@@ -93,7 +93,7 @@ class rotatedcube(imagecube):
                              resample=True, PA_min=None, PA_max=None,
                              exclude_PA=False, method='dV', nwalkers=32,
                              nburnin=100, nsteps=100, plot_walkers=False,
-                             plot_corner=False, threads=1.0):
+                             plot_corner=False, verbose=False):
         """
         Return the rotation profile by deprojecting the spectra. Two methods
         are available: 'dV' and 'GP'.
@@ -128,7 +128,7 @@ class rotatedcube(imagecube):
         nsteps:         Number of steps to use to sample the posterior.
         plot_walkers:   Plot the samples to check for convergence.
         plot_corner:    Plot the corner plot to check for covariance.
-        threads:        Number of threads to use for the parallelisation.
+        verbose:        Print out how far you are through the fitting.
 
         - Output -
 
@@ -162,6 +162,10 @@ class rotatedcube(imagecube):
         # Cycle through each annulus and apply the method.
         v_rot = []
         for r in range(1, rbins.size):
+
+            if verbose:
+                print("Running %d / %d..." % (r, rbins.size-1))
+
             mask = self._get_mask(r_min=rbins[r-1], r_max=rbins[r],
                                   PA_min=PA_min, PA_max=PA_max,
                                   exclude_PA=exclude_PA).flatten()
@@ -170,12 +174,14 @@ class rotatedcube(imagecube):
             if method.lower() == 'dv':
                 v_rot += [self._get_vrot_from_width(spectra, angles, resample)]
             else:
-                radius = rbins[r-1:r+1].mean()
-                v_rot += [self._get_vrot_from_GP(spectra, angles, nwalkers,
-                                                 nburnin, nsteps,
-                                                 plot_walkers, plot_corner,
-                                                 self._projected_vkep(radius),
-                                                 threads)]
+                try:
+                    vkep = self._projected_vkep(rbins[r-1:r+1].mean())
+                    v_rot += [self._get_vrot_from_GP(spectra, angles, nwalkers,
+                                                     nburnin, nsteps,
+                                                     plot_walkers, plot_corner,
+                                                     vkep)]
+                except:
+                    v_rot += [np.zeros((3, 4))]
         return rpnts, np.squeeze(v_rot)
 
     def _projected_vkep(self, radius, theta=None):

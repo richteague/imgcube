@@ -4,12 +4,33 @@ Random functions to help with the analysis.
 
 import numpy as np
 import scipy.constants as sc
+import matplotlib.pyplot as plt
+from matplotlib.patches import Ellipse
 
 
 def _keplerian(rvals, inc, mstar, dist):
     """Keplerian rotation with stellar mass as free parameter."""
     vkep = np.sqrt(sc.G * mstar * 1.989e30 / rvals / sc.au / dist)
     return vkep * np.sin(np.radians(inc))
+
+
+def plotbeam(bmaj, bmin=None, bpa=0.0, ax=None, **kwargs):
+    """Plot a beam. Input must be same units as axes. PA in degrees E of N."""
+    if ax is None:
+        fig, ax = plt.subplots()
+    if bmin is None:
+        bmin = bmaj
+    if bmin > bmaj:
+        temp = bmin
+        bmin = bmaj
+        bmaj = temp
+    offset = kwargs.get('offset', 0.125)
+    ax.add_patch(Ellipse(ax.transLimits.inverted().transform((offset, offset)),
+                         width=bmin, height=bmaj, angle=-bpa,
+                         fill=False, hatch=kwargs.get('hatch', '////////'),
+                         lw=kwargs.get('linewidth', kwargs.get('lw', 1)),
+                         color=kwargs.get('color', kwargs.get('c', 'k'))))
+    return
 
 
 def plot_walkers(samples, nburnin=None, labels=None):
