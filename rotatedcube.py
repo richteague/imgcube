@@ -20,6 +20,7 @@ from functions import Matern32_model
 from detect_peaks import detect_peaks
 from scipy.interpolate import interp1d
 from scipy.optimize import curve_fit, minimize
+import scipy.constants as sc
 
 
 class rotatedcube(imagecube):
@@ -92,7 +93,7 @@ class rotatedcube(imagecube):
                              resample=True, PA_min=None, PA_max=None,
                              exclude_PA=False, method='dV', nwalkers=32,
                              nburnin=100, nsteps=100, plot_walkers=False,
-                             plot_corner=False):
+                             plot_corner=False, threads=1.0):
         """
         Return the rotation profile by deprojecting the spectra. Two methods
         are available: 'dV' and 'GP'.
@@ -127,6 +128,7 @@ class rotatedcube(imagecube):
         nsteps:         Number of steps to use to sample the posterior.
         plot_walkers:   Plot the samples to check for convergence.
         plot_corner:    Plot the corner plot to check for covariance.
+        threads:        Number of threads to use for the parallelisation.
 
         - Output -
 
@@ -140,8 +142,6 @@ class rotatedcube(imagecube):
         if method.lower() not in ['dv', 'gp']:
             raise ValueError("Must specify method: 'dV' or 'GP'.")
         if method.lower() == 'gp' and resample:
-            print("WARNING: Resampling deprojected spectra does not work.")
-            print("\t Setting resample = False.")
             resample = False
 
         # Deprojected pixel coordinates.
@@ -171,10 +171,11 @@ class rotatedcube(imagecube):
                 v_rot += [self._get_vrot_from_width(spectra, angles, resample)]
             else:
                 radius = rbins[r-1:r+1].mean()
-                v_rot += [self._get_vrot_from_GP(spectra, angles, resample,
-                                                 nwalkers, nburnin, nsteps,
+                v_rot += [self._get_vrot_from_GP(spectra, angles, nwalkers,
+                                                 nburnin, nsteps,
                                                  plot_walkers, plot_corner,
-                                                 self._projected_vkep(radius))]
+                                                 self._projected_vkep(radius),
+                                                 threads)]
         return rpnts, np.squeeze(v_rot)
 
     def _projected_vkep(self, radius, theta=None):
@@ -229,14 +230,21 @@ class rotatedcube(imagecube):
         p0 = np.array([vrot, rms, np.log(rms), np.log(dV)])
         return random_p0(p0, scatter, nwalkers), vrot
 
-    def _get_vrot_from_GP(self, spectra, angles, resample=False, nwalkers=32,
-                          nburnin=100, nsteps=100, plot_walkers=False,
-                          plot_corner=False, vkep=None):
+    def _get_vrot_from_GP(self, spectra, angles, nwalkers=32,
+                          nburnin=100, nsteps=50, plot_walkers=False,
+                          plot_corner=False, vkep=None, threads=1.0):
         """Calculate rotation velocity by modelling lines as GPs."""
         p0, estimated_vrot = self._get_p0(spectra, angles, nwalkers)
         vkep = estimated_vrot if vkep is None else vkep
-        sampler = emcee.EnsembleSampler(nwalkers, 4, self._log_probability_M32,
-                                        args=(spectra, angles, resample, vkep))
+
+        if threads <= 1.0:
+            args = (spectra, angles, False, vkep)
+            sampler = emcee.EnsembleSampler(nwalkers, 4,
+                                            self._log_probability_M32,
+                                            args=args)
+        else:
+            raise NotImplementedError("This just slows it all down...")
+
         sampler.run_mcmc(p0, nburnin + nsteps)
         samples = sampler.chain[:, -nsteps:]
         samples = samples.reshape(-1, samples.shape[-1])
@@ -286,6 +294,50 @@ class rotatedcube(imagecube):
             return -np.inf
         ll = gp.log_likelihood(y, quiet=True)
         return ll if np.isfinite(ll) else -np.inf
+
+    def fit_rotation_curve(self, rvals, vrot, dvrot=None, beam_clip=2.0,
+                           fit_mstar=True, verbose=True, save=True):
+        """Find the best fitting stellar mass for the rotation profile."""
+        if beam_clip:
+            mask = rvals > float(beam_clip) * self.bmaj
+        else:
+            mask = rvals > 0.0
+
+        # Defining functions to let curve_fit do its thing.
+        from scipy.optimize import curve_fit
+        if fit_mstar:
+            def vkep(rvals, mstar):
+                return functions._keplerian(rvals, self.inc, mstar, self.dist)
+            p0 = self.mstar
+        else:
+            def vkep(rvals, inc):
+                return functions._keplerian(rvals, inc, self.mstar, self.dist)
+            p0 = self.inc
+        p, c = curve_fit(vkep, rvals[mask], vrot[mask], p0=p0, maxfev=10000,
+                         sigma=dvrot[mask] if dvrot is not None else None)
+
+        # Print, save and return the best-fit values.
+        if fit_mstar:
+            if verbose:
+                print("Best-fit: Mstar = %.2f +\- %.2f Msun." % (p, c[0]))
+            if save:
+                self.mstar = p[0]
+        else:
+            if verbose:
+                print("Best-fit inc: %.2f +\- %.2f degrees." % (p, c[0]))
+            if save:
+                self.inc = p[0]
+        return p[0], c[0, 0]
+
+    def _keplerian_mstar(self, rvals, mstar):
+        """Keplerian rotation with stellar mass as free parameter."""
+        vkep = np.sqrt(sc.G * mstar * self.msun / rvals / sc.au / self.dist)
+        return vkep * np.sin(np.radians(self.inc))
+
+    def _keplerian_inc(self, rvals, inc):
+        """Keplerian rotation with inclination as free parameter."""
+        vkep = sc.G * self.mstar * self.msun / rvals / sc.au / self.dist
+        return np.sqrt(vkep * np.sin(np.radians(inc)))
 
     # == Spatial Deprojections == #
 
@@ -484,3 +536,9 @@ class rotatedcube(imagecube):
                 # Include the coordinates to the list.
                 coords += [[r, z, Tb]]
         return np.squeeze(coords).T
+
+
+def keplerian_rotation(rvals, theta, *args):
+    """Call a specific function."""
+    instance, name = args
+    return getattr(instance, name)(rvals, theta)

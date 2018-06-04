@@ -3,6 +3,13 @@ Random functions to help with the analysis.
 """
 
 import numpy as np
+import scipy.constants as sc
+
+
+def _keplerian(rvals, inc, mstar, dist):
+    """Keplerian rotation with stellar mass as free parameter."""
+    vkep = np.sqrt(sc.G * mstar * 1.989e30 / rvals / sc.au / dist)
+    return vkep * np.sin(np.radians(inc))
 
 
 def plot_walkers(samples, nburnin=None, labels=None):
