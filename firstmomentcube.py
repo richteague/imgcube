@@ -43,11 +43,15 @@ class firstmomentcube(imagecube):
         except:
             raise ValueError("Cannot find emcee.")
 
+        # Warning about the no bounds.
+        if r_max is None:
+            print("WARNING: No r_max specified which may cause trouble.")
+
         # Find the starting positions.
         if p0 is None:
             print("WARNING: No starting values provided. May not converge.")
             free_theta = self.mstar if fit_Mstar else self.inc
-            p0 = [0.0, 0.0, free_theta, 45., self.vlsr]
+            p0 = [0.0, 0.0, free_theta, 45., self.vlsr * 1e3]
         p0 = random_p0(np.squeeze(p0), scatter, nwalkers)
 
         # Make sure the error is across the whole image.
@@ -65,6 +69,9 @@ class firstmomentcube(imagecube):
         samples = sampler.chain[:, -nsteps:]
         samples = samples.reshape(-1, samples.shape[-1])
 
+        # Allows for PA to be negative.
+        samples[:, 3] = (samples[:, 3] + 360.) % 360.
+
         # Diagnosis plots.
         labels = [r'$x_0$', r'$y_0$', r'$M_{\star}$' if fit_Mstar else r'$i$',
                   r'${\rm PA}$', r'$v_{\rm LSR}$']
@@ -73,7 +80,10 @@ class firstmomentcube(imagecube):
         if plot_corner:
             functions.plot_corner(samples, labels)
         if plot_fit:
-            self._plot_best_fit(samples, theta_fixed, fit_Mstar, beam)
+            self._plot_best_fit(samples, theta_fixed, fit_Mstar, beam,
+                                r_min, r_max)
+            self._plot_residual(samples, theta_fixed, fit_Mstar, beam,
+                                r_min, r_max)
 
         # Return the fits.
         if return_samples:
@@ -86,7 +96,7 @@ class firstmomentcube(imagecube):
         if not np.isfinite(self._ln_prior(theta, theta_fixed, fit_Mstar)):
             return -np.inf
         return self._ln_likelihood(theta, theta_fixed, fit_Mstar, error,
-                                   beam=True, r_min=None, r_max=None)
+                                   beam=True, r_min=r_min, r_max=r_max)
 
     def _ln_likelihood(self, theta, theta_fixed, fit_Mstar, error,
                        beam=True, r_min=None, r_max=None):
@@ -134,7 +144,7 @@ class firstmomentcube(imagecube):
             return -np.inf
         if not 0.0 < inc < 90.0:
             return -np.inf
-        if not 0.0 < PA < 360.:
+        if not -360. < PA < 360.:
             return -np.inf
         if not 0.0 < vlsr < 1e4:
             return -np.inf
@@ -159,6 +169,7 @@ class firstmomentcube(imagecube):
                                        r_min=r_min, r_max=r_max)
         import matplotlib.cm as cm
         import matplotlib.pyplot as plt
+
         fig, ax = plt.subplots()
         im = ax.contourf(self.xaxis, self.yaxis, model, 30, cmap=cm.bwr)
         cb = plt.colorbar(im, pad=0.02, ticks=np.arange(10))
@@ -166,13 +177,57 @@ class firstmomentcube(imagecube):
                      labelpad=15)
         ax.set_aspect(1)
         ax.grid(ls=':', color='k', alpha=0.3)
-        ax.set_xlim(self.xaxis.max(), self.xaxis.min())
-        ax.set_ylim(self.yaxis.min(), self.yaxis.max())
+        if r_max is None:
+            ax.set_xlim(self.xaxis.max(), self.xaxis.min())
+            ax.set_ylim(self.yaxis.min(), self.yaxis.max())
+        else:
+            ax.set_xlim(1.1 * r_max, -1.1 * r_max)
+            ax.set_ylim(-1.1 * r_max, 1.1 * r_max)
         ax.set_xlabel('Offset (arcsec)')
         ax.set_ylabel('Offset (arcsec)')
 
-        from functions import plotbeam
-        plotbeam(bmaj=self.bmaj, bmin=self.bmin, bpa=self.bpa, ax=ax)
+        if beam:
+            from functions import plotbeam
+            plotbeam(bmaj=self.bmaj, bmin=self.bmin, bpa=self.bpa, ax=ax)
+
+    def _plot_residual(self, samples, theta_fixed, fit_Mstar, beam, r_min=None,
+                       r_max=None):
+        """Plot the residuals for the best fit model."""
+        import matplotlib.cm as cm
+        import matplotlib.pyplot as plt
+        model = self._get_masked_model(theta=np.median(samples, axis=0),
+                                       theta_fixed=theta_fixed,
+                                       fit_Mstar=fit_Mstar, beam=beam,
+                                       r_min=r_min, r_max=r_max)
+
+        # Find the bounds of the model.
+        residual = 1e2 * (self.data - model) / self.data
+        vmax = min(np.nanmax(abs(residual)), 100.)
+        vmin = -vmax
+        tick = np.arange(np.floor(vmin), vmax+1, np.floor(vmax / 2.5))
+        # Plot the figure.
+        fig, ax = plt.subplots()
+        im = ax.contourf(self.xaxis, self.yaxis, residual,
+                         levels=np.linspace(vmin, vmax, 30), cmap=cm.RdBu_r,
+                         extend='both', vmin=vmin, vmax=vmax)
+        cb = plt.colorbar(im, pad=0.02, ticks=tick)
+        cb.set_label(r'Residiual (\%)', rotation=270, labelpad=15)
+
+        # Set up the axes.
+        ax.set_aspect(1)
+        ax.grid(ls=':', color='k', alpha=0.3)
+        if r_max is None:
+            ax.set_xlim(self.xaxis.max(), self.xaxis.min())
+            ax.set_ylim(self.yaxis.min(), self.yaxis.max())
+        else:
+            ax.set_xlim(1.1 * r_max, -1.1 * r_max)
+            ax.set_ylim(-1.1 * r_max, 1.1 * r_max)
+        ax.set_xlabel('Offset (arcsec)')
+        ax.set_ylabel('Offset (arcsec)')
+
+        if beam:
+            from functions import plotbeam
+            plotbeam(bmaj=self.bmaj, bmin=self.bmin, bpa=self.bpa, ax=ax)
 
     def plot_first_moment(self, ax=None, levels=None):
         """Plot the first moment map."""

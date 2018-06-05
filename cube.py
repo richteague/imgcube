@@ -283,12 +283,12 @@ class imagecube:
 
         # Near side rotation.
         v_near = np.sqrt(sc.G * mstar * self.msun / near[0] / sc.au)
-        v_near *= np.sin(np.radians(inc)) * np.cos(near[1])
+        v_near *= np.sin(np.radians(inc)) * np.cos(near[1] + np.radians(90.))
         v_near += vlsr
 
         # Far side rotation.
         v_far = np.sqrt(sc.G * mstar * self.msun / far[0] / sc.au)
-        v_far *= np.sin(np.radians(inc)) * np.cos(far[1])
+        v_far *= np.sin(np.radians(inc)) * np.cos(far[1] + np.radians(90.))
         v_far += vlsr
 
         # Clip inner and outer regions before returning.
@@ -310,7 +310,7 @@ class imagecube:
 
         # Keplerian rotation profile.
         vkep = np.sqrt(sc.G * mstar * self.msun / rvals / sc.au)
-        vkep *= np.sin(np.radians(inc)) * np.cos(tvals)
+        vkep *= np.sin(np.radians(inc)) * np.cos(tvals + np.radians(90.))
         vkep += vlsr
 
         # Mask non-disk regions.
@@ -320,12 +320,19 @@ class imagecube:
             vkep = np.where(rvals > rout, np.nan, vkep)
         return vkep
 
+    def _dV_profile(self, x0, y0, inc, PA, dV, dVq=0.0):
+        """Return a radial linewidth profile."""
+        if dVq == 0.0:
+            return dV
+        rdisk = self.disk_coordinates(x0, y0, inc, PA)[0]
+        return dV * np.power(rdisk, dVq)
+
     def _keplerian_mask(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, mstar=1.0,
                         rout=None, rin=None, dist=100, vlsr=0.0, dV=250.,
-                        psi=0.0):
+                        psi=0.0, dVq=0.0):
         """Generate the Keplerian mask as a cube. dV is FWHM of line."""
         mask = np.ones(self.data.shape) * self.velax[:, None, None]
-
+        dV = self._dV_profile(x0, y0, inc, PA, dV, dVq)
         if psi == 0.0:
             vkep = self._keplerian_profile(x0=x0, y0=y0, inc=inc, PA=PA,
                                            mstar=mstar, rout=rout, rin=rin,
@@ -342,7 +349,7 @@ class imagecube:
 
     def CLEAN_mask(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, mstar=1.0, rout=None,
                    rin=None, dist=100., vlsr=0.0, dV=250., nbeams=0.0, psi=0.0,
-                   fname=None, fast=True, return_mask=False):
+                   dVq=0.0, fname=None, fast=True, return_mask=False):
         """Save a CASA readable mask using the spectral information."""
 
         # Account for hyperfine components and emission surfaces.
@@ -350,7 +357,8 @@ class imagecube:
         psis = [0.0] if psi == 0.0 else np.arange(0.0, psi, 2.0)
         mask = [self._keplerian_mask(x0=x0, y0=y0, inc=inc, PA=PA, mstar=mstar,
                                      rout=rout, rin=rin, dist=dist, vlsr=v,
-                                     dV=dV, psi=p) for v in vlsr for p in psis]
+                                     dV=dV, dVq=dVq, psi=p)
+                for v in vlsr for p in psis]
         mask = np.nansum(mask, axis=0)
         mask = np.where(mask > 0, 1, 0)
         if mask.shape != self.data.shape:
@@ -358,7 +366,7 @@ class imagecube:
 
         # Include the beam smearing.
         if nbeams > 0.0:
-            mask = self.convolve_cube(nbeams=nbeams, data=mask, fast=fast)
+            mask = self.convolve_cube(nbeams=nbeams, data=mask*1e2, fast=fast)
 
         # Return the mask if requested.
         if return_mask:
