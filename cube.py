@@ -220,7 +220,7 @@ class imagecube:
         omega = self.bmin * self.bmaj / np.power(self.dpix, 2)
         if self.bmin == self.dpix and self.bmaj == self.dpix:
             return omega
-        return np.pi * omega / 2. / np.log(2.)
+        return np.pi * omega / 4. / np.log(2.)
 
     @property
     def beam_per_pix(self):

@@ -26,10 +26,12 @@ class firstmomentcube(imagecube):
         if self.data.ndim != 2:
             raise ValueError("WARNING: Not a 2D image.")
         if vlsr is None:
-            print("WARNING: No systemic velocity specified.")
+            print("WARNING: No systemic velocity [km/s] specified.")
             self.vlsr = np.nanmedian(self.data)
         else:
             self.vlsr = vlsr
+            if self.vlsr > 1e3:
+                print("WARNING: systemic velocity in [m/s], not [km/s].")
 
     def fit_keplerian(self, p0=None, fit_Mstar=True, beam=True, r_min=None,
                       r_max=None, nwalkers=128, nburnin=200, nsteps=50,
@@ -51,7 +53,7 @@ class firstmomentcube(imagecube):
         if p0 is None:
             print("WARNING: No starting values provided. May not converge.")
             free_theta = self.mstar if fit_Mstar else self.inc
-            p0 = [0.0, 0.0, free_theta, 45., self.vlsr * 1e3]
+            p0 = [0.0, 0.0, free_theta, self._estimate_PA(), self.vlsr * 1e3]
         p0 = random_p0(np.squeeze(p0), scatter, nwalkers)
 
         # Make sure the error is across the whole image.
@@ -160,6 +162,14 @@ class firstmomentcube(imagecube):
             Mstar = theta_fixed
         return x0, y0, inc, Mstar, PA, vlsr
 
+    def _estimate_PA(self, clip=5):
+        """Estimate the PA of the disk."""
+        t = np.where(self.data <= np.nanpercentile(self.data, [clip]),
+                     self.disk_coordinates(0.0, 0.0, self.inc, 0.0)[1], np.nan)
+        return np.nanmean((np.degrees(t) + 360.) % 360.) + 45.
+
+    # == Plotting Functions == #
+
     def _plot_best_fit(self, samples, theta_fixed, fit_Mstar, beam, r_min=None,
                        r_max=None):
         """Plot the best fit moment map."""
@@ -195,7 +205,8 @@ class firstmomentcube(imagecube):
         """Plot the residuals for the best fit model."""
         import matplotlib.cm as cm
         import matplotlib.pyplot as plt
-        model = self._get_masked_model(theta=np.median(samples, axis=0),
+        median = np.median(samples, axis=0)
+        model = self._get_masked_model(theta=median,
                                        theta_fixed=theta_fixed,
                                        fit_Mstar=fit_Mstar, beam=beam,
                                        r_min=r_min, r_max=r_max)
@@ -205,6 +216,7 @@ class firstmomentcube(imagecube):
         vmax = min(np.nanmax(abs(residual)), 100.)
         vmin = -vmax
         tick = np.arange(np.floor(vmin), vmax+1, np.floor(vmax / 2.5))
+
         # Plot the figure.
         fig, ax = plt.subplots()
         im = ax.contourf(self.xaxis, self.yaxis, residual,
@@ -212,6 +224,9 @@ class firstmomentcube(imagecube):
                          extend='both', vmin=vmin, vmax=vmax)
         cb = plt.colorbar(im, pad=0.02, ticks=tick)
         cb.set_label(r'Residiual (\%)', rotation=270, labelpad=15)
+
+        # Plot the disk center.
+        ax.scatter(median[0], median[1], color='k', marker='x')
 
         # Set up the axes.
         ax.set_aspect(1)
@@ -240,7 +255,7 @@ class firstmomentcube(imagecube):
             levels = np.nanpercentile(self.data, [2, 98])
             levels = np.linspace(levels[0], levels[1], 30)
         im = ax.contourf(self.xaxis, self.yaxis, self.data, levels,
-                         cmap=cm.bwr)
+                         cmap=cm.RdBu_r, extend='both')
         cb = plt.colorbar(im, pad=0.02, ticks=np.arange(10))
         cb.set_label('Line of Sight Velocity (km/s)', rotation=270,
                      labelpad=15)
