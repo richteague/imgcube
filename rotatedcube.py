@@ -399,6 +399,7 @@ class rotatedcube(imagecube):
                     theta = [z_0, z_q].
         conical:    Flat, constant angle surface: z = r * tan(psi) + z_0, where
                     theta = [psi, z_0] where psi in [degrees].
+
         """
         theta = np.atleast_1d(theta)
         if func.lower() == 'powerlaw':

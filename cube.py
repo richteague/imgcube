@@ -269,6 +269,16 @@ class imagecube:
         convolved_cube = [self._convolve_image(c, kernel, fast) for c in data]
         return np.squeeze(convolved_cube)
 
+    def plotbeam(self, ax, dx=0.125, dy=0.125, **kwargs):
+        """Plot the sythensized beam on the provided axes."""
+        from matplotlib.patches import Ellipse
+        beam = Ellipse(ax.transLimits.inverted().transform((dx, dy)),
+                       width=self.bmin, height=self.bmaj, angle=-self.bpa,
+                       fill=False, hatch=kwargs.get('hatch', '////////'),
+                       lw=kwargs.get('linewidth', kwargs.get('lw', 1)),
+                       color=kwargs.get('color', kwargs.get('c', 'k')))
+        ax.add_patch(beam)
+
     # == Functions to write a Keplerian mask for CLEANing. == #
 
     def _keplerian_profile_psi(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0,
@@ -392,7 +402,8 @@ class imagecube:
         Deprojected pixel coordinates in [arcsec, radians]. Takes into account
         a convical emission surface as in Rosenfeld et al. (2013).
         """
-        x_sky, y_sky = np.meshgrid(self.xaxis[::-1] - x0, self.yaxis - y0)
+        x_sky, y_sky = np.meshgrid(self.xaxis[::-1] - x0 - self.dpix,
+                                   self.yaxis - y0)
         x_rot, y_rot = self._rotate(x_sky, y_sky, PA + 90.)
         t_pos, t_neg = functions.solve_quadratic(x_rot, y_rot, inc, psi)
         y_disk = y_rot / np.cos(np.radians(inc))
@@ -407,7 +418,8 @@ class imagecube:
         Deprojected pixel coordinates in [arcsec, radians].
         Note that PA is relative to the eastern major axis.
         """
-        x_sky, y_sky = np.meshgrid(self.xaxis[::-1] - x0, self.yaxis - y0)
+        x_sky, y_sky = np.meshgrid(self.xaxis[::-1] - x0 - self.dpix,
+                                   self.yaxis - y0)
         x_rot, y_rot = self._rotate(x_sky, y_sky, PA + 90.)
         x_dep, y_dep = self._incline(x_rot, y_rot, inc)
         return np.hypot(x_dep, y_dep), np.arctan2(y_dep, x_dep)

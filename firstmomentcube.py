@@ -212,21 +212,24 @@ class firstmomentcube(imagecube):
                                        r_min=r_min, r_max=r_max)
 
         # Find the bounds of the model.
-        residual = 1e2 * (self.data - model) / self.data
-        vmax = min(np.nanmax(abs(residual)), 100.)
+        residual = (self.data - model)
+        residual /= np.sign(self.data - median[-1] / 1e3)
+        vmax = min(np.nanmax(abs(residual)), 0.5)
         vmin = -vmax
-        tick = np.arange(np.floor(vmin), vmax+1, np.floor(vmax / 2.5))
+        tick = np.floor(vmax * 10. / 2.5) / 10.
+        tick = np.arange(np.floor(vmin * tick) / tick, vmax+1, tick)
 
         # Plot the figure.
         fig, ax = plt.subplots()
-        im = ax.contourf(self.xaxis, self.yaxis, residual,
-                         levels=np.linspace(vmin, vmax, 30), cmap=cm.RdBu_r,
-                         extend='both', vmin=vmin, vmax=vmax)
+        im = ax.contourf(self.xaxis - median[0], self.yaxis - median[1],
+                         residual, levels=np.linspace(vmin, vmax, 30),
+                         cmap=cm.RdBu_r, extend='both', vmin=vmin, vmax=vmax)
         cb = plt.colorbar(im, pad=0.02, ticks=tick)
-        cb.set_label(r'Residiual (\%)', rotation=270, labelpad=15)
+        cb.set_label(r'${\rm Residiual \quad (km\,s^{-1})}$',
+                     rotation=270, labelpad=15)
 
         # Plot the disk center.
-        ax.scatter(median[0], median[1], color='k', marker='x')
+        ax.scatter(0.0, 0.0, color='k', marker='x')
 
         # Set up the axes.
         ax.set_aspect(1)
