@@ -33,6 +33,72 @@ class firstmomentcube(imagecube):
             if self.vlsr > 1e3:
                 print("WARNING: systemic velocity in [m/s], not [km/s].")
 
+    def fit_keplerian_psi(self, p0=None, fit_Mstar=True, beam=True, r_min=None,
+                          r_max=None, nwalkers=128, nburnin=200, nsteps=50,
+                          scatter=1e-2, error=None, plot_walkers=True,
+                          plot_corner=True, plot_fit=True,
+                          return_samples=False):
+        """
+        Fit a Keplerian rotation profile to the first moment map including the
+        height of the emission surface above the midplane. Best for 8th
+        moment maps rather than first.
+        """
+
+        # Load up emcee.
+        try:
+            import emcee
+        except:
+            raise ValueError("Cannot find emcee.")
+
+        # Warning about the no bounds.
+        if r_max is None:
+            print("WARNING: No r_max specified which may cause trouble.")
+
+        # Find the starting positions.
+        if p0 is None:
+            print("WARNING: No starting values provided - may not converge.")
+            free_theta = self.mstar if fit_Mstar else self.inc
+            p0 = [0., 0., free_theta, self._estimate_PA(), self.vlsr * 1e3, 8.]
+            print("\t Have chosen:"), p0
+            print("\t Can include them with the p0 argument.")
+        p0 = random_p0(np.squeeze(p0), scatter, nwalkers)
+
+        # Make sure the error is across the whole image.
+        error = 0.1 if error is None else error
+        error = np.ones(self.data.shape) * error
+        if error.shape != self.data.shape:
+            raise ValueError("RMS doesn't match data.shape.")
+
+        # Run the sampler.
+        theta_fixed = self.inc if fit_Mstar else self.mstar
+        args = (theta_fixed, fit_Mstar, error, beam, r_min, r_max)
+        sampler = emcee.EnsembleSampler(nwalkers, 6, self._ln_probability,
+                                        args=args)
+        sampler.run_mcmc(p0, nburnin + nsteps)
+        samples = sampler.chain[:, -nsteps:]
+        samples = samples.reshape(-1, samples.shape[-1])
+
+        # Allows for PA to be negative.
+        samples[:, 3] = (samples[:, 3] + 360.) % 360.
+
+        # Diagnosis plots.
+        labels = [r'$x_0$', r'$y_0$', r'$M_{\star}$' if fit_Mstar else r'$i$',
+                  r'${\rm PA}$', r'$v_{\rm LSR}$', r'$\varphi$']
+        if plot_walkers:
+            functions.plot_walkers(sampler.chain.T, nburnin, labels)
+        if plot_corner:
+            functions.plot_corner(samples, labels)
+        if plot_fit:
+            self._plot_best_fit(samples, theta_fixed, fit_Mstar, beam,
+                                r_min, r_max)
+            self._plot_residual(samples, theta_fixed, fit_Mstar, beam,
+                                r_min, r_max)
+
+        # Return the fits.
+        if return_samples:
+            return samples
+        return np.percentile(samples, [16, 50, 84], axis=0)
+
     def fit_keplerian(self, p0=None, fit_Mstar=True, beam=True, r_min=None,
                       r_max=None, nwalkers=128, nburnin=200, nsteps=50,
                       scatter=1e-2, error=None, plot_walkers=True,
@@ -51,9 +117,11 @@ class firstmomentcube(imagecube):
 
         # Find the starting positions.
         if p0 is None:
-            print("WARNING: No starting values provided. May not converge.")
+            print("WARNING: No starting values provided - may not converge.")
             free_theta = self.mstar if fit_Mstar else self.inc
-            p0 = [0.0, 0.0, free_theta, self._estimate_PA(), self.vlsr * 1e3]
+            p0 = [0., 0., free_theta, self._estimate_PA(), self.vlsr * 1e3]
+            print("\t Have chosen:"), p0
+            print("\t Can include them with the p0 argument.")
         p0 = random_p0(np.squeeze(p0), scatter, nwalkers)
 
         # Make sure the error is across the whole image.
@@ -116,8 +184,8 @@ class firstmomentcube(imagecube):
                           r_min=None, r_max=None):
         """Return a masked model rotation profile in [km/s]."""
         params = self._unpack_theta(theta, theta_fixed, fit_Mstar)
-        x0, y0, inc, _, PA, _ = params
-        rvals = self.disk_coordinates(x0=x0, y0=y0, inc=inc, PA=PA)[0]
+        rvals = self.disk_coordinates(x0=params[0], y0=params[1],
+                                      inc=params[2], PA=params[4])[0]
         r_max = self.xaxis.max() if r_max is None else r_max
         r_min = 0.0 if r_min is None else r_min
         model = self._get_model(params, beam)
@@ -126,18 +194,28 @@ class firstmomentcube(imagecube):
 
     def _get_model(self, params, beam):
         """Return the model rotation profile in [km/s]."""
-        x0, y0, inc, Mstar, PA, vlsr = params
-        vkep = self._keplerian_profile(x0=x0, y0=y0, inc=inc, PA=PA,
-                                       mstar=Mstar, dist=self.dist,
-                                       vlsr=vlsr) / 1e3
+        try:
+            x0, y0, inc, Mstar, PA, vlsr = params
+            vkep = self._keplerian_profile(x0=x0, y0=y0, inc=inc, PA=PA,
+                                           mstar=Mstar, dist=self.dist,
+                                           vlsr=vlsr) / 1e3
+        except:
+            x0, y0, inc, Mstar, PA, vlsr, psi = params
+            vkep = self._keplerian_profile_psi(x0=x0, y0=y0, inc=inc, PA=PA,
+                                               mstar=Mstar, dist=self.dist,
+                                               vlsr=vlsr, psi=psi)[0] / 1e3
         if beam:
             return self._convolve_image(vkep, self._beamkernel())
         return vkep
 
     def _ln_prior(self, theta, theta_fixed, fit_Mstar):
         """Log-priors for the MCMC fit."""
+
+        # Unpack the free parameters.
         params = self._unpack_theta(theta, theta_fixed, fit_Mstar)
-        x0, y0, inc, Mstar, PA, vlsr = params
+        x0, y0, inc, Mstar, PA, vlsr, psi = params
+
+        # Conditions.
         if 0.5 < abs(x0):
             return -np.inf
         if 0.5 < abs(y0):
@@ -150,17 +228,27 @@ class firstmomentcube(imagecube):
             return -np.inf
         if not 0.0 < vlsr < 1e4:
             return -np.inf
+        if not 0.0 <= psi < 45.:
+            return -np.inf
         return 0.0
 
     def _unpack_theta(self, theta, theta_fixed, fit_Mstar):
         """Unpack the model parameters."""
         if fit_Mstar:
-            x0, y0, Mstar, PA, vlsr = theta
+            try:
+                x0, y0, Mstar, PA, vlsr, psi = theta
+            except:
+                x0, y0, Mstar, PA, vlsr = theta
+                psi = 0.0
             inc = theta_fixed
         else:
-            x0, y0, inc, PA, vlsr = theta
+            try:
+                x0, y0, inc, PA, vlsr, psi = theta
+            except:
+                x0, y0, inc, PA, vlsr = theta
+                psi = 0.0
             Mstar = theta_fixed
-        return x0, y0, inc, Mstar, PA, vlsr
+        return x0, y0, inc, Mstar, PA, vlsr, psi
 
     def _estimate_PA(self, clip=5):
         """Estimate the PA of the disk."""
@@ -225,7 +313,7 @@ class firstmomentcube(imagecube):
                          residual, levels=np.linspace(vmin, vmax, 30),
                          cmap=cm.RdBu_r, extend='both', vmin=vmin, vmax=vmax)
         cb = plt.colorbar(im, pad=0.02, ticks=tick)
-        cb.set_label(r'${\rm Residiual \quad (km\,s^{-1})}$',
+        cb.set_label(r'${\rm Obsevations - Model \quad (km\,s^{-1})}$',
                      rotation=270, labelpad=15)
 
         # Plot the disk center.
