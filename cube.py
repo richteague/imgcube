@@ -287,18 +287,18 @@ class imagecube:
         """Keplerian profile including a conical emission surface."""
 
         # Pixel coordinates.
-        near, far = self.disk_coordinates_psi(x0, y0, inc, PA-90., psi)
+        near, far = self.disk_coordinates_psi(x0, y0, inc, PA, psi)
         near[0] *= dist
         far[0] *= dist
 
         # Near side rotation.
         v_near = np.sqrt(sc.G * mstar * self.msun / near[0] / sc.au)
-        v_near *= np.sin(np.radians(inc)) * np.cos(near[1] + np.radians(90.))
+        v_near *= np.sin(np.radians(inc)) * np.cos(near[1] + np.radians(180.))
         v_near += vlsr
 
         # Far side rotation.
         v_far = np.sqrt(sc.G * mstar * self.msun / far[0] / sc.au)
-        v_far *= np.sin(np.radians(inc)) * np.cos(far[1] + np.radians(90.))
+        v_far *= np.sin(np.radians(inc)) * np.cos(far[1] + np.radians(180.))
         v_far += vlsr
 
         # Clip inner and outer regions before returning.
@@ -315,12 +315,12 @@ class imagecube:
         """Make a Keplerian mask for CLEANing."""
 
         # Pixel coordinates.
-        rvals, tvals = self.disk_coordinates(x0, y0, inc, PA-90.)
+        rvals, tvals = self.disk_coordinates(x0, y0, inc, PA)
         rvals *= dist
 
         # Keplerian rotation profile.
         vkep = np.sqrt(sc.G * mstar * self.msun / rvals / sc.au)
-        vkep *= np.sin(np.radians(inc)) * np.cos(tvals + np.radians(90.))
+        vkep *= np.sin(np.radians(inc)) * np.cos(tvals + np.radians(180.))
         vkep += vlsr
 
         # Mask non-disk regions.
@@ -343,6 +343,8 @@ class imagecube:
         """Generate the Keplerian mask as a cube. dV is FWHM of line."""
         mask = np.ones(self.data.shape) * self.velax[:, None, None]
         dV = self._dV_profile(x0, y0, inc, PA, dV, dVq)
+
+        # Flat disk.
         if psi == 0.0:
             vkep = self._keplerian_profile(x0=x0, y0=y0, inc=inc, PA=PA,
                                            mstar=mstar, rout=rout, rin=rin,
@@ -350,6 +352,7 @@ class imagecube:
             vkep = abs(mask - np.ones(self.data.shape) * vkep[None, :, :])
             return np.where(vkep <= dV, 1., 0.)
 
+        # Flared disk.
         vkep = self._keplerian_profile_psi(x0=x0, y0=y0, inc=inc, PA=PA,
                                            mstar=mstar, rout=rout, rin=rin,
                                            dist=dist, vlsr=vlsr, psi=psi)
@@ -364,7 +367,7 @@ class imagecube:
 
         # Account for hyperfine components and emission surfaces.
         vlsr = np.atleast_1d(vlsr)
-        psis = [0.0] if psi == 0.0 else np.arange(0.0, psi, 2.0)
+        psis = [0.0] if psi == 0.0 else np.arange(0.0, psi, 5.0)
         mask = [self._keplerian_mask(x0=x0, y0=y0, inc=inc, PA=PA, mstar=mstar,
                                      rout=rout, rin=rin, dist=dist, vlsr=v,
                                      dV=dV, dVq=dVq, psi=p)

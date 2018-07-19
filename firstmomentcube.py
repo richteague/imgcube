@@ -58,7 +58,8 @@ class firstmomentcube(imagecube):
         if p0 is None:
             print("WARNING: No starting values provided - may not converge.")
             free_theta = self.mstar if fit_Mstar else self.inc
-            p0 = [0., 0., free_theta, self._estimate_PA(), self.vlsr * 1e3, 8.]
+            p0 = [0., 0., free_theta, self._estimate_PA(),
+                  self.vlsr * 1e3, 8., 0.0]
             print("\t Have chosen:"), p0
             print("\t Can include them with the p0 argument.")
         p0 = random_p0(np.squeeze(p0), scatter, nwalkers)
@@ -72,8 +73,8 @@ class firstmomentcube(imagecube):
         # Run the sampler.
         theta_fixed = self.inc if fit_Mstar else self.mstar
         args = (theta_fixed, fit_Mstar, error, beam, r_min, r_max)
-        sampler = emcee.EnsembleSampler(nwalkers, 6, self._ln_probability,
-                                        args=args)
+        sampler = emcee.EnsembleSampler(nwalkers, p0.shape[1],
+                                        self._ln_probability, args=args)
         sampler.run_mcmc(p0, nburnin + nsteps)
         samples = sampler.chain[:, -nsteps:]
         samples = samples.reshape(-1, samples.shape[-1])
@@ -83,7 +84,8 @@ class firstmomentcube(imagecube):
 
         # Diagnosis plots.
         labels = [r'$x_0$', r'$y_0$', r'$M_{\star}$' if fit_Mstar else r'$i$',
-                  r'${\rm PA}$', r'$v_{\rm LSR}$', r'$\varphi$']
+                  r'${\rm PA}$', r'$v_{\rm LSR}$', r'$\varphi$',
+                  r'${\rm side}$']
         if plot_walkers:
             functions.plot_walkers(sampler.chain.T, nburnin, labels)
         if plot_corner:
@@ -200,10 +202,11 @@ class firstmomentcube(imagecube):
                                            mstar=Mstar, dist=self.dist,
                                            vlsr=vlsr) / 1e3
         except:
-            x0, y0, inc, Mstar, PA, vlsr, psi = params
+            x0, y0, inc, Mstar, PA, vlsr, psi, side = params
             vkep = self._keplerian_profile_psi(x0=x0, y0=y0, inc=inc, PA=PA,
                                                mstar=Mstar, dist=self.dist,
-                                               vlsr=vlsr, psi=psi)[0] / 1e3
+                                               vlsr=vlsr, psi=psi)
+            vkep = vkep[0 if side >= 0 else 1] / 1e3
         if beam:
             return self._convolve_image(vkep, self._beamkernel())
         return vkep
@@ -213,7 +216,7 @@ class firstmomentcube(imagecube):
 
         # Unpack the free parameters.
         params = self._unpack_theta(theta, theta_fixed, fit_Mstar)
-        x0, y0, inc, Mstar, PA, vlsr, psi = params
+        x0, y0, inc, Mstar, PA, vlsr, psi, side = params
 
         # Conditions.
         if 0.5 < abs(x0):
@@ -230,25 +233,29 @@ class firstmomentcube(imagecube):
             return -np.inf
         if not 0.0 <= psi < 45.:
             return -np.inf
+        if not -1.0 <= side <= 1.0:
+            return -np.inf
         return 0.0
 
     def _unpack_theta(self, theta, theta_fixed, fit_Mstar):
         """Unpack the model parameters."""
         if fit_Mstar:
             try:
-                x0, y0, Mstar, PA, vlsr, psi = theta
+                x0, y0, Mstar, PA, vlsr, psi, side = theta
             except:
                 x0, y0, Mstar, PA, vlsr = theta
                 psi = 0.0
+                side = 0.0
             inc = theta_fixed
         else:
             try:
-                x0, y0, inc, PA, vlsr, psi = theta
+                x0, y0, inc, PA, vlsr, psi, side = theta
             except:
                 x0, y0, inc, PA, vlsr = theta
                 psi = 0.0
+                side = 0.0
             Mstar = theta_fixed
-        return x0, y0, inc, Mstar, PA, vlsr, psi
+        return x0, y0, inc, Mstar, PA, vlsr, psi, side
 
     def _estimate_PA(self, clip=5):
         """Estimate the PA of the disk."""

@@ -17,6 +17,8 @@ from functions import sort_arrays
 from functions import random_p0
 from functions import running_stdev
 from functions import Matern32_model
+from functions import plotscale
+from functions import percentiles_to_errors
 from detect_peaks import detect_peaks
 from scipy.interpolate import interp1d
 from scipy.optimize import curve_fit, minimize
@@ -25,16 +27,12 @@ import scipy.constants as sc
 
 class rotatedcube(imagecube):
 
-    def __init__(self, path, tilt='north', inc=None, mstar=None, dist=None,
-                 x0=0.0, y0=0.0, verbose=True, clip=None):
+    def __init__(self, path, inc=None, mstar=None, dist=None, x0=0.0, y0=0.0,
+                 verbose=True, clip=None):
         """Read in the rotated image cube."""
 
         # Initilize the class.
         imagecube.__init__(self, path, absolute=False, kelvin=True, clip=clip)
-        if tilt.lower() not in ['north', 'south']:
-            raise ValueError("Must specify tilt as 'north' or 'south'.")
-        else:
-            self.tilt = tilt.lower()
         self.verbose = verbose
 
         # Get the deprojected pixel values assuming a thin disk.
@@ -60,6 +58,55 @@ class rotatedcube(imagecube):
 
     # == Spectral Deprojection == #
 
+    def get_deprojected_spectra(self, vrot, rbins=None, rpnts=None,
+                                include_height=True, method='bin', PA_min=None,
+                                PA_max=None, exclude_PA=False):
+        """
+        Return the deprojected spectra using the provided rotation profile.
+        """
+
+        # Populate variables.
+        if method.lower() not in ['bin', 'gp']:
+            raise ValueError("Method must be ['bin', 'GP']")
+
+        # Deprojected pixel coordinates.
+        if include_height:
+            rvals, tvals = self.disk_coordinates_3D()
+        else:
+            rvals, tvals = self.disk_coordinates(self.x0, self.y0, self.inc)
+        rvals, tvals = rvals.flatten(), tvals.flatten()
+        if rbins is None and rvals is None:
+            print("WARNING: No radial sampling set, this will take a while.")
+        rbins, rpnts = self._radial_sampling(rbins=rbins, rvals=rpnts)
+
+        # Flatten the data to [velocity, nxpix * nypix].
+        dvals = self.data.copy().reshape(self.data.shape[0], -1)
+        if dvals.shape != (self.velax.size, self.nxpix * self.nypix):
+            raise ValueError("Wrong data shape.")
+
+        # Deproject the spectra.
+        deprojected = []
+        for r in range(1, rbins.size):
+
+            # Get spectra and deproject.
+            mask = self._get_mask(r_min=rbins[r-1], r_max=rbins[r],
+                                  PA_min=PA_min, PA_max=PA_max,
+                                  exclude_PA=exclude_PA).flatten()
+            spectra, angles = dvals[:, mask].T, tvals[mask]
+            spectra = self._deproject_spectra(spectra, angles, vrot[r-1])
+
+            # Collapse to a single spectrum.
+            if method == 'bin':
+                deprojected += [np.nanmean(spectra, axis=0)]
+            else:
+                noise = np.nanstd(self.data[0]) * np.ones(spectra.shape)
+                velax = self.velax[None, :] * np.ones(spectra.shape)
+                x, y, _ = Matern32_model(velax.flatten(), spectra.flatten(),
+                                         noise.flatten(), oversample=False)
+                deprojected += [interp1d(x, y, bounds_error=False,
+                                fill_value='extrapolate')(self.velax)]
+        return np.squeeze(deprojected)
+
     def _deprojected_width(self, vrot, spectra, angles, resample=True):
         """Return the width of the deprojected line profile."""
         x, y = self._deprojected_spectrum(spectra, angles, vrot, resample)
@@ -82,10 +129,222 @@ class rotatedcube(imagecube):
 
     def _deproject_spectra(self, spectra, angles, vrot):
         """Deproject all the spectra to a common systemic velocity."""
+        # deprojected = [interp1d(self.velax - vrot * np.cos(angle), spectrum,
+        #                         fill_value='extrapolate')(self.velax)
         deprojected = [interp1d(self.velax - vrot * np.cos(angle), spectrum,
-                                fill_value='extrapolate')(self.velax)
+                                fill_value=np.nan,
+                                bounds_error=False)(self.velax)
                        for spectrum, angle in zip(spectra, angles)]
         return np.squeeze(deprojected)
+
+    # == Temperature Profiles == #
+
+    def get_temperature_profile(self, spectra, method='peak', fit=True,
+                                errors=False, verbose=True, mu=28.,
+                                emcee_kwargs={}, plot_walkers=False,
+                                plot_corner=False):
+        """
+        Return the temperature profile from the spectra.
+
+        - Inputs -
+
+        spectra:        Array of the spectra to fit. Should all be on the
+                        attached velocity axis.
+        method:         Method to measure the temperature: 'peak' uses the line
+                        peak, 'width', the line width and 'combined' uses both.
+        fit:            Whether the peak and width are determined by fitting an
+                        analytical form or numerically.
+        errors:         Whether to return uncertainties on the derived values.
+                        If True, use emcee to sample the posterior
+                        distribution, otherwise use curve_fit which is much
+                        faster.
+        verbose:        Print out which number spectrum is being fit.
+        mu:             Mean molecular weight of the emitting molecule.
+        emcee_kwargs:   Dictionary of parameters used for emcee: nwalkers,
+                        nburnin, nsteps, scatter.
+        plot_walkers:   Plot the walkers for emcee runs?
+        plot_corner:    Plot the corner plot for emcee runs?
+
+        - Returns -
+
+        temperature:    The derived temperature (and uncertainty if requested)
+                        for each spectrum. If method != 'combined' then only a
+                        single temperature will be returned.
+        """
+
+        # Check inputs.
+        if self.bunit != 'k':
+            print("WARNING: Intensity in Jy/beam, not K.")
+        if method.lower() not in ['width', 'peak', 'combined']:
+            raise ValueError("method must be ['width', 'peak', 'combined'].")
+        if type(fit) is not bool:
+            raise ValueError("fit must be True or False.")
+        if fit and method == 'combined':
+            raise ValueError("Must have fit=True for method='combine'.")
+
+        # Make sure the spectra array shape is correct.
+        spectra = np.atleast_2d(spectra)
+        if spectra.shape[0] == self.velax.size:
+            spectra = spectra.T
+        if spectra.shape[1] != self.velax.size:
+            raise ValueError("Wrong shape of spectra arrays.")
+
+        # Loop through each spectrum.
+        temp = []
+        for s, spectrum in enumerate(spectra):
+            if verbose:
+                print("Running spectrum %d / %d." % (s+1, spectra.shape[0]))
+            if fit:
+                if errors:
+                    if method == 'combined':
+                        temp += [self._emcee_combined(spectrum, mu,
+                                                      emcee_kwargs,
+                                                      plot_walkers,
+                                                      plot_corner)]
+                    else:
+                        temp += [self._emcee_individual(spectrum, mu,
+                                                        emcee_kwargs,
+                                                        plot_walkers,
+                                                        plot_corner)]
+                else:
+                    if method == 'combined':
+                        temp += [self._curvefit_combined(spectrum, mu)]
+                    else:
+                        temp += [self._curvefit_individual(spectrum, mu)]
+            else:
+                if method == 'peak':
+                    temp += [self._numerical_peak(spectrum)]
+                elif method == 'width':
+                    temp += [self._numerical_width(spectrum)]
+        return np.squeeze(temp)
+
+    def _numerical_peak(self, spectrum):
+        """Returns peak of the spectrum."""
+        return np.nanmax(spectrum)
+
+    def _numerical_width(self, spectrum):
+        """Returns the Doppler width of spectrum assuming a Gaussian."""
+        area = np.trapz(spectrum, self.velax)
+        peak = self._numerical_peak(spectrum)
+        return area / peak / np.sqrt(np.pi)
+
+    def _curvefit_individual(self, spectrum, mu=28.):
+        """Fit a Gaussian where Tb and dV are independent."""
+        def gaussian_combined(x, x0, Tkin, Tb):
+            dV = np.sqrt(2. * sc.k * Tkin / mu / sc.m_p)
+            return gaussian(x, x0, dV, Tb)
+        p0 = [self.velax[spectrum.argmax()],
+              self._numerical_peak(spectrum),
+              self._numerical_peak(spectrum)]
+        popt, _ = curve_fit(gaussian, self.velax, spectrum,
+                            p0=p0, maxfev=1000)
+        return popt[1], popt[2]
+
+    def _curvefit_combined(self, spectrum, mu=28.):
+        """Fit a Gaussian where Tb and dV are coupled."""
+        def gaussian_combined(x, x0, Tkin):
+            dV = np.sqrt(2. * sc.k * Tkin / mu / sc.m_p)
+            return gaussian(x, x0, dV, Tkin)
+        p0 = [self.velax[spectrum.argmax()], self._numerical_peak(spectrum)]
+        popt, _ = curve_fit(gaussian_combined, self.velax, spectrum,
+                            p0=p0, maxfev=10000)
+        return popt[1]
+
+    def _ln_emcee(self, theta, spectrum, uncertainty, mu=28.):
+        """Log-probability function for emcee."""
+
+        # Unpack properties.
+        try:
+            x0, Tkin, Tb = theta
+        except:
+            x0, Tb = theta
+            Tkin = Tb
+        dV = np.sqrt(2. * sc.k * Tkin / mu / sc.m_p)
+
+        # Uninformative priors.
+        if not self.velax[0] <= x0 <= self.velax[-1]:
+            return -np.inf
+        if not 0 < Tb < 3. * np.nanmax(spectrum):
+            return -np.inf
+        if not 0 < dV < (self.velax[-1] - self.velax[0]) / 3.0:
+            return -np.inf
+
+        # Log-likelihood.
+        model = gaussian(self.velax, x0, dV, Tb)
+        lnx2 = np.power((spectrum - model) / uncertainty, 2)
+        lnx2 += np.log(2. * np.pi * np.power(uncertainty, 2))
+        return -0.5 * np.nansum(lnx2)
+
+    def _emcee_combined(self, spectrum, mu=28., emcee_kwargs={},
+                        plot_walkers=False, plot_corner=False):
+        """Fit a Gaussian where Tb and dV are coupled using emcee."""
+
+        # Populate parameters.
+        nwalkers = emcee_kwargs.pop('nwalkers', 32)
+        nburnin = emcee_kwargs.pop('nburnin', 50)
+        nsteps = emcee_kwargs.pop('nsteps', 50)
+        scatter = emcee_kwargs.pop('scatter', 1e-2)
+
+        # Starting positions.
+        p0 = [self.velax[spectrum.argmax()], self._numerical_peak(spectrum)]
+        p0 = random_p0(p0, scatter, nwalkers)
+
+        # Calculate the RMS of the spectrum.
+        uncertainty = self._numerical_width(spectrum)
+        uncertainty = abs(self.velax - uncertainty) / uncertainty
+        uncertainty = np.nanstd(spectrum[uncertainty >= 3.0])
+
+        # Run emcee.
+        sampler = emcee.EnsembleSampler(nwalkers, 2, self._ln_emcee_single,
+                                        args=(uncertainty, mu))
+        sampler.run_mcmc(p0, nburnin + nsteps)
+        samples = sampler.chain[:, -nsteps:]
+        samples = samples.reshape(-1, samples.shape[-1])
+
+        # Plot diagnostics if appropriate.
+        labels = [r'${\rm x_0}$', r'${\rm T_{ex}}$']
+        if plot_walkers:
+            functions.plot_walkers(sampler.chain.T, nburnin, labels)
+        if plot_corner:
+            functions.plot_corner(samples, labels)
+        percentiles = np.percentile(samples, [16, 50, 84], axis=0)
+        return percentiles_to_errors(percentiles)
+
+    def _emcee_individual(self, spectrum, mu=28., emcee_kwargs={},
+                          plot_walkers=False, plot_corner=False):
+        """Fit a Gaussian where Tb and dV are independent using emcee."""
+        # Populate parameters.
+        nwalkers = emcee_kwargs.pop('nwalkers', 32)
+        nburnin = emcee_kwargs.pop('nburnin', 50)
+        nsteps = emcee_kwargs.pop('nsteps', 50)
+        scatter = emcee_kwargs.pop('scatter', 1e-2)
+
+        # Starting positions.
+        p0 = [self.velax[spectrum.argmax()],
+              self._numerical_peak(spectrum),
+              self._numerical_peak(spectrum)]
+        p0 = random_p0(p0, scatter, nwalkers)
+
+        # Calculate the RMS of the spectrum.
+        uncertainty = self._numerical_width(spectrum)
+        uncertainty = abs(self.velax - uncertainty) / uncertainty
+        uncertainty = np.nanstd(spectrum[uncertainty >= 3.0])
+
+        # Run emcee.
+        sampler = emcee.EnsembleSampler(nwalkers, 3, self._ln_emcee_single,
+                                        args=(uncertainty, mu))
+        sampler.run_mcmc(p0, nburnin + nsteps)
+        samples = sampler.chain[:, -nsteps:]
+        samples = samples.reshape(-1, samples.shape[-1])
+
+        # Plot diagnostics if appropriate.
+        labels = [r'${\rm x_0}$', r'${\rm T_{kin}}$', r'${\rm T_{B}}$']
+        if plot_walkers:
+            functions.plot_walkers(sampler.chain.T, nburnin, labels)
+        if plot_corner:
+            functions.plot_corner(samples, labels)
+        percentiles = np.percentile(samples, [16, 50, 84], axis=0)
+        return percentiles_to_errors(percentiles)
 
     # == Rotation Profiles == #
 
@@ -168,7 +427,9 @@ class rotatedcube(imagecube):
 
             mask = self._get_mask(r_min=rbins[r-1], r_max=rbins[r],
                                   PA_min=PA_min, PA_max=PA_max,
-                                  exclude_PA=exclude_PA).flatten()
+                                  exclude_PA=exclude_PA,
+                                  x0=self.x0, y0=self.y0,
+                                  inc=self.inc).flatten()
             spectra, angles = dvals[:, mask].T, tvals[mask]
 
             if method.lower() == 'dv':
@@ -497,11 +758,15 @@ class rotatedcube(imagecube):
         ax.errorbar(self.rvals, self.emission_surface(self.rvals),
                     fmt='-o', mew=0, color='k', ms=2)
         ax.set_xlim(0.0, self.rvals[self.zvals > 0.0].max()+self.bmaj)
+        ax.set_ylabel(r'Height (arcsec)')
+        ax.set_xlabel(r'Radius (arcsec)')
+        plotscale(self.bmaj, dx=0.1, dy=0.9, ax=ax)
 
     def _get_emission_surface(self, data, x0, y0, inc, r_max=None):
         """Find the emission surface [r, z, dz] values."""
 
         coords = []
+        tilt = []
         r_max = abs(self.xaxis).max() if r_max is None else r_max
         for c, channel in enumerate(data):
 
@@ -542,6 +807,14 @@ class rotatedcube(imagecube):
 
                 # Include the coordinates to the list.
                 coords += [[r, z, Tb]]
+
+                # Measure the tilt of the emission surface (north / south).
+                tilt += [np.sign(yc - y0)]
+
+        # Use the sign to tell if the surface is 'north' or 'south' tilted.
+        self.tilt = 'north' if np.sign(np.nanmean(tilt)) > 0 else 'south'
+        if self.verbose:
+            print("Found offsets in the %s direction." % self.tilt)
         return np.squeeze(coords).T
 
 

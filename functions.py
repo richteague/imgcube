@@ -33,6 +33,33 @@ def plotbeam(bmaj, bmin=None, bpa=0.0, ax=None, **kwargs):
     return
 
 
+def plotscale(scale, dx=0.9, dy=0.9, ax=None, text=None, text_above=True,
+              **kwargs):
+    """Plot a linear scale on the provided axes."""
+
+    # Generate axes if not provided.
+    if ax is None:
+        fig, ax = plt.subplots()
+
+    # Draw the scale bar.
+    x, y = ax.transLimits.inverted().transform((dx, dy))
+    ax.errorbar(x, y, xerr=0.5*scale, capsize=1.5, capthick=1.0,
+                lw=kwargs.get('linewidth', kwargs.get('lw', 1.0)),
+                color=kwargs.get('color', kwargs.get('c', 'k')))
+
+    # Include the labelling.
+    if text:
+        if text_above:
+            x, y = ax.transLimits.inverted().transform((dx, 1.2 * dy))
+        else:
+            x, y = ax.transLimits.inverted().transform((dx, 0.8 * dy))
+        text = text if type(text) is not bool else '%.2f' % scale
+        ax.text(x, y, text, ha='center', va='bottom' if text_above else 'top',
+                fontsize=kwargs.get('fontsize', kwargs.get('fs', 7.0)),
+                color=kwargs.get('color', kwargs.get('c', 'k')))
+    return
+
+
 def plot_walkers(samples, nburnin=None, labels=None):
     """Plot the walkers to check if they are burning in."""
 
