@@ -21,12 +21,12 @@ import scipy.constants as sc
 class rotatedcube(imagecube):
 
     def __init__(self, path, inc=None, mstar=None, dist=None, x0=0.0, y0=0.0,
-                 verbose=True, clip=None):
+                 verbose=True, clip=None, suppress_warnings=False):
         """Read in the rotated image cube."""
 
         # Initilize the class.
-        imagecube.__init__(self, path, absolute=False, kelvin=True, clip=clip)
-        self.verbose = verbose
+        imagecube.__init__(self, path, absolute=False, kelvin=True, clip=clip,
+                           suppress_warnings=suppress_warnings)
 
         # Get the deprojected pixel values assuming a thin disk.
         self.x0, self.y0 = x0, y0
@@ -68,7 +68,7 @@ class rotatedcube(imagecube):
         else:
             rvals, tvals = self.disk_coordinates(self.x0, self.y0, self.inc)
         rvals, tvals = rvals.flatten(), tvals.flatten()
-        if rbins is None and rvals is None:
+        if rbins is None and rvals is None and self.verbose:
             print("WARNING: No radial sampling set, this will take a while.")
         rbins, rpnts = self._radial_sampling(rbins=rbins, rvals=rpnts)
 
@@ -199,7 +199,7 @@ class rotatedcube(imagecube):
         else:
             rvals, tvals = self.disk_coordinates(self.x0, self.y0, self.inc)
         rvals, tvals = rvals.flatten(), tvals.flatten()
-        if rbins is None and rvals is None:
+        if rbins is None and rvals is None and self.verbose:
             print("WARNING: No radial sampling set, this will take a while.")
         rbins, rpnts = self._radial_sampling(rbins=rbins, rvals=rpnts)
 
@@ -275,7 +275,7 @@ class rotatedcube(imagecube):
         vrot, vlsr = self._estimate_vrot(spectra, angles)
 
         # Check that the rotation velocity is positive.
-        if vrot < 0.0:
+        if vrot < 0.0 and self.verbose:
             print("WARNING: Negative rotation velocity found.")
             print("\t Check blue shifted side aligned with East.")
 

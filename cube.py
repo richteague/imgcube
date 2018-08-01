@@ -31,6 +31,9 @@ class imagecube:
         if suppress_warnings:
             import warnings
             warnings.filterwarnings("ignore")
+            self.verbose = True
+        else:
+            self.verbose = False
 
         # Read in the data and header.
         self.path = os.path.expanduser(path)
@@ -40,7 +43,7 @@ class imagecube:
 
         # Generate the cube axes.
         self.absolute = absolute
-        if self.absolute:
+        if self.absolute and self.verbose:
             print("Returning absolute coordinate values.")
             print("WARNING: self.dpix will be strange.")
         self.xaxis = self._readpositionaxis(a=1)
@@ -73,7 +76,7 @@ class imagecube:
         else:
             self.jy2k = self._jy2k()
         if kelvin:
-            if self.data.ndim == 2:
+            if self.data.ndim == 2 and self.verbose:
                 print("WARNING: Converting to Kelvin.")
             self.data *= self.jy2k
             self.bunit = 'k'
