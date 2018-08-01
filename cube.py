@@ -51,6 +51,7 @@ class imagecube:
                              abs(np.diff(self.yaxis))])
 
         self.velax = self._readvelocityaxis()
+        self.chan = np.mean(np.diff(self.velax))
 
         # Get the beam properties of the beam.
         try:
@@ -75,6 +76,7 @@ class imagecube:
             if self.data.ndim == 2:
                 print("WARNING: Converting to Kelvin.")
             self.data *= self.jy2k
+            self.bunit = 'k'
 
         # Clip the clube down to a smaller field of view.
         if clip is not None:
@@ -429,7 +431,7 @@ class imagecube:
 
     def _rotate(self, x, y, PA):
         """Rotate (x, y) around the center by PA [deg]."""
-        PArad = np.radians(PA + 90)
+        PArad = np.radians(PA + 90.)
         x_rot = x * np.cos(PArad) + y * np.sin(PArad)
         y_rot = y * np.cos(PArad) - x * np.sin(PArad)
         return x_rot, y_rot
