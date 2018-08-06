@@ -376,7 +376,7 @@ class imagecube:
         """2D Gaussian kernel in pixel coordinates."""
         xm = np.arange(-4*np.nanmax([dy, dx]), 4*np.nanmax([dy, dx])+1)
         x, y = np.meshgrid(xm, xm)
-        x, y = self._rotate(x, y, PA)
+        x, y = self._rotate_coords(x, y, PA)
         k = np.power(x / dx, 2) + np.power(y / dy, 2)
         return np.exp(-0.5 * k) / 2. / np.pi / dx / dy
 
