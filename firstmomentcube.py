@@ -5,15 +5,15 @@ Class for fitting the first moment maps.
 import functions
 import numpy as np
 from cube import imagecube
-from functions import random_p0
 
 
 class firstmomentcube(imagecube):
 
     def __init__(self, path, mstar=None, inc=None, dist=None, vlsr=None,
-                 clip=None):
+                 clip=None, suppress_warnings=False):
         """Read in the first moment map."""
-        imagecube.__init__(self, path, absolute=False, kelvin=False, clip=clip)
+        imagecube.__init__(self, path, absolute=False, kelvin=False, clip=clip,
+                           suppress_warnings=suppress_warnings)
         if mstar is None:
             raise ValueError("WARNING: Must specify mstar [Msun].")
         self.mstar = mstar
@@ -33,15 +33,23 @@ class firstmomentcube(imagecube):
             if self.vlsr > 1e3:
                 print("WARNING: systemic velocity in [m/s], not [km/s].")
 
-    def fit_keplerian_psi(self, p0=None, fit_Mstar=True, beam=True, r_min=None,
-                          r_max=None, nwalkers=128, nburnin=200, nsteps=50,
-                          scatter=1e-2, error=None, plot_walkers=True,
-                          plot_corner=True, plot_fit=True,
-                          return_samples=False):
+    def fit_keplerian(self, p0=None, fit_mstar=True, beam=True, r_min=None,
+                      r_max=None, z_type='thin', nearest=None, nwalkers=None,
+                      nburnin=300, nsteps=300, scatter=1e-2, error=None,
+                      plot_walkers=True, plot_corner=True, plot_bestfit=True,
+                      return_samples=False):
         """
-        Fit a Keplerian rotation profile to the first moment map including the
-        height of the emission surface above the midplane. Best for 8th
-        moment maps rather than first.
+        Fit a Keplerian rotation profile to a first / ninth moment map.
+
+        - Input -
+
+        p0
+        fit_mstar
+        beam
+        r_min
+        r_max
+        z_type
+        nearest
         """
 
         # Load up emcee.
@@ -50,180 +58,108 @@ class firstmomentcube(imagecube):
         except:
             raise ValueError("Cannot find emcee.")
 
-        # Warning about the no bounds.
-        if r_max is None:
+        # Check the input parameters.
+        z_type = z_type.lower()
+        if z_type not in ['thin', 'conical', 'flared']:
+            raise ValueError("Can only fit 'thin', 'conical' or 'flared'.")
+
+        # Warning about the bounds.
+        if r_max is None and self.verbose:
             print("WARNING: No r_max specified which may cause trouble.")
 
         # Find the starting positions.
         if p0 is None:
-            print("WARNING: No starting values provided - may not converge.")
-            free_theta = self.mstar if fit_Mstar else self.inc
-            p0 = [0., 0., free_theta, self._estimate_PA(),
-                  self.vlsr * 1e3, 8., 0.0]
-            print("\t Have chosen:"), p0
-            print("\t Can include them with the p0 argument.")
-        p0 = random_p0(np.squeeze(p0), scatter, nwalkers)
+            if self.verbose:
+                print("WARNING: Estimating starting values. May not work.")
+            free_theta = self.mstar if fit_mstar else self.inc
+            p0 = [0.0, 0.0, free_theta, self._estimate_PA(), self.vlsr * 1e3]
+            if z_type == 'conical':
+                p0 += [8.0]
+                if nearest is None:
+                    p0 += [0.0]
+            elif z_type == 'flared':
+                p0 += [0.1, 1.2]
+                if nearest is None:
+                    p0 += [0.0]
+            if self.verbose:
+                print("Have chosen:", p0)
+        ndim = len(p0)
+        nwalkers = 2 * ndim if nwalkers is None else nwalkers
+        p0 = self._random_p0(np.squeeze(p0), scatter, nwalkers)
 
-        # Make sure the error is across the whole image.
+        # Define the labels.
+        labels = [r'$x_0$', r'$y_0$', r'$M_{\star}$' if fit_mstar else r'$i$',
+                  r'${\rm PA}$', r'$v_{\rm LSR}$']
+        if z_type == 'conical':
+            labels += [r'$\psi$']
+        elif z_type == 'flared':
+            labels += [r'$z\,/\,r$', r'$\phi$']
+        if z_type != 'thin' and nearest is None:
+            labels += [r'${\rm tilt}$']
+        assert len(labels) == ndim, "Mismatch in p0 and labels."
+
+        # Make sure there are errors
+        if self.verbose and error is None:
+            print("WARNING: No error specified. Assuming 0.1 km/s.")
         error = 0.1 if error is None else error
         error = np.ones(self.data.shape) * error
         if error.shape != self.data.shape:
             raise ValueError("RMS doesn't match data.shape.")
 
-        # Run the sampler.
-        theta_fixed = self.inc if fit_Mstar else self.mstar
-        args = (theta_fixed, fit_Mstar, error, beam, r_min, r_max)
-        sampler = emcee.EnsembleSampler(nwalkers, p0.shape[1],
-                                        self._ln_probability, args=args)
-        sampler.run_mcmc(p0, nburnin + nsteps)
-        samples = sampler.chain[:, -nsteps:]
-        samples = samples.reshape(-1, samples.shape[-1])
-
-        # Allows for PA to be negative.
-        samples[:, 3] = (samples[:, 3] + 360.) % 360.
-
-        # Diagnosis plots.
-        labels = [r'$x_0$', r'$y_0$', r'$M_{\star}$' if fit_Mstar else r'$i$',
-                  r'${\rm PA}$', r'$v_{\rm LSR}$', r'$\varphi$',
-                  r'${\rm side}$']
-        if plot_walkers:
-            functions.plot_walkers(sampler.chain.T, nburnin, labels)
-        if plot_corner:
-            functions.plot_corner(samples, labels)
-        if plot_fit:
-            self._plot_best_fit(samples, theta_fixed, fit_Mstar, beam,
-                                r_min, r_max)
-            self._plot_residual(samples, theta_fixed, fit_Mstar, beam,
-                                r_min, r_max)
-
-        # Return the fits.
-        if return_samples:
-            return samples
-        return np.percentile(samples, [16, 50, 84], axis=0)
-
-    def fit_keplerian(self, p0=None, fit_Mstar=True, beam=True, r_min=None,
-                      r_max=None, nwalkers=128, nburnin=200, nsteps=50,
-                      scatter=1e-2, error=None, plot_walkers=True,
-                      plot_corner=True, plot_fit=True, return_samples=False):
-        """Fit a Keplerian rotation profile to the first moment map."""
-
-        # Load up emcee.
-        try:
-            import emcee
-        except:
-            raise ValueError("Cannot find emcee.")
-
-        # Warning about the no bounds.
-        if r_max is None:
-            print("WARNING: No r_max specified which may cause trouble.")
-
-        # Find the starting positions.
-        if p0 is None:
-            print("WARNING: No starting values provided - may not converge.")
-            free_theta = self.mstar if fit_Mstar else self.inc
-            p0 = [0., 0., free_theta, self._estimate_PA(), self.vlsr * 1e3]
-            print("\t Have chosen:"), p0
-            print("\t Can include them with the p0 argument.")
-        p0 = random_p0(np.squeeze(p0), scatter, nwalkers)
-
-        # Make sure the error is across the whole image.
-        error = 0.1 if error is None else error
-        error = np.ones(self.data.shape) * error
-        if error.shape != self.data.shape:
-            raise ValueError("RMS doesn't match data.shape.")
-
-        # Run the sampler.
-        theta_fixed = self.inc if fit_Mstar else self.mstar
-        args = (theta_fixed, fit_Mstar, error, beam, r_min, r_max)
-        sampler = emcee.EnsembleSampler(nwalkers, 5, self._ln_probability,
-                                        args=args)
+        # Run the MCMC.
+        theta_fixed = self.inc if fit_mstar else self.mstar
+        sampler = emcee.EnsembleSampler(nwalkers, ndim, self._lnprobability,
+                                        args=(theta_fixed, fit_mstar, error,
+                                              beam, r_min, r_max, z_type,
+                                              nearest))
         sampler.run_mcmc(p0, nburnin + nsteps)
         samples = sampler.chain[:, -int(nsteps):]
         samples = samples.reshape(-1, samples.shape[-1])
-
-        # Allows for PA to be negative.
         samples[:, 3] = (samples[:, 3] + 360.) % 360.
 
-        # Diagnosis plots.
-        labels = [r'$x_0$', r'$y_0$', r'$M_{\star}$' if fit_Mstar else r'$i$',
-                  r'${\rm PA}$', r'$v_{\rm LSR}$']
+        # Plotting here.
         if plot_walkers:
             functions.plot_walkers(sampler.chain.T, nburnin, labels)
         if plot_corner:
             functions.plot_corner(samples, labels)
-        if plot_fit:
-            self._plot_best_fit(samples, theta_fixed, fit_Mstar, beam,
-                                r_min, r_max)
-            self._plot_residual(samples, theta_fixed, fit_Mstar, beam,
-                                r_min, r_max)
+        if plot_bestfit:
+            self._plot_bestfit(samples, theta_fixed, fit_mstar, error, beam,
+                               r_min, r_max, z_type, nearest)
 
         # Return the fits.
         if return_samples:
             return samples
         return np.percentile(samples, [16, 50, 84], axis=0)
 
-    def _ln_probability(self, theta, theta_fixed, fit_Mstar, error,
-                        beam=True, r_min=None, r_max=None):
-        """Log-probability function for the MCMC fit."""
-        if not np.isfinite(self._ln_prior(theta, theta_fixed, fit_Mstar)):
-            return -np.inf
-        return self._ln_likelihood(theta, theta_fixed, fit_Mstar, error,
-                                   beam=True, r_min=r_min, r_max=r_max)
+    # == emcee Functions == #
 
-    def _ln_likelihood(self, theta, theta_fixed, fit_Mstar, error,
-                       beam=True, r_min=None, r_max=None):
-        """Log-likelihood function for the MCMC fit."""
-        model = self._get_masked_model(theta=theta, theta_fixed=theta_fixed,
-                                       fit_Mstar=fit_Mstar, beam=beam,
-                                       r_min=r_min, r_max=r_max)
-        mask = np.logical_and(np.isfinite(self.data), np.isfinite(model))
-        lnx2 = np.power((self.data[mask] - model[mask]) / error[mask], 2)
-        lnx2 -= np.log(error[mask]**2 * np.sqrt(2 * np.pi))
-        lnx2 = -0.5 * np.nansum(lnx2)
-        return lnx2 if np.isfinite(lnx2) else -np.inf
+    def _lnprobability(self, theta, theta_fixed, fit_mstar, error, beam, r_min,
+                       r_max, z_type, nearest):
+        """Log-likelihood function for a thin disk."""
 
-    def _get_masked_model(self, theta, theta_fixed, fit_Mstar, beam=True,
-                          r_min=None, r_max=None):
-        """Return a masked model rotation profile in [km/s]."""
-        params = self._unpack_theta(theta, theta_fixed, fit_Mstar)
-        rvals = self.disk_coordinates(x0=params[0], y0=params[1],
-                                      inc=params[2], PA=params[4])[0]
-        r_max = self.xaxis.max() if r_max is None else r_max
-        r_min = 0.0 if r_min is None else r_min
-        model = self._get_model(params, beam)
-        mask = np.logical_and(rvals >= r_min, rvals <= r_max)
-        return np.where(mask, model, np.nan)
+        # Unpack the standard variables.
 
-    def _get_model(self, params, beam):
-        """Return the model rotation profile in [km/s]."""
-        try:
-            x0, y0, inc, Mstar, PA, vlsr = params
-            vkep = self._keplerian_profile(x0=x0, y0=y0, inc=inc, PA=PA,
-                                           mstar=Mstar, dist=self.dist,
-                                           vlsr=vlsr) / 1e3
-        except:
-            x0, y0, inc, Mstar, PA, vlsr, psi, side = params
-            vkep = self._keplerian_profile_psi(x0=x0, y0=y0, inc=inc, PA=PA,
-                                               mstar=Mstar, dist=self.dist,
-                                               vlsr=vlsr, psi=psi)
-            vkep = vkep[0 if side >= 0 else 1] / 1e3
-        if beam:
-            return self._convolve_image(vkep, self._beamkernel())
-        return vkep
+        x0, y0 = theta[0], theta[1]
+        if fit_mstar:
+            mstar = theta[2]
+            inc = self.inc
+        else:
+            inc = theta[2]
+            mstar = self.mstar
+        PA = theta[3]
+        vlsr = theta[4]
+        if z_type != 'thin' and nearest is None:
+            tilt = theta[-1]
+        else:
+            tilt = 1.0 if nearest == 'north' else -1.0
 
-    def _ln_prior(self, theta, theta_fixed, fit_Mstar):
-        """Log-priors for the MCMC fit."""
+        # Check their priors.
 
-        # Unpack the free parameters.
-        params = self._unpack_theta(theta, theta_fixed, fit_Mstar)
-        x0, y0, inc, Mstar, PA, vlsr, psi, side = params
-
-        # Conditions.
         if 0.5 < abs(x0):
             return -np.inf
         if 0.5 < abs(y0):
             return -np.inf
-        if not 0.0 < Mstar < 5.0:
+        if not 0.0 < mstar < 5.0:
             return -np.inf
         if not 0.0 < inc < 90.0:
             return -np.inf
@@ -231,53 +167,106 @@ class firstmomentcube(imagecube):
             return -np.inf
         if not 0.0 < vlsr < 1e4:
             return -np.inf
-        if not 0.0 <= psi < 45.:
+        if not -1 <= tilt <= 1:
             return -np.inf
-        if not -1.0 <= side <= 1.0:
-            return -np.inf
-        return 0.0
 
-    def _unpack_theta(self, theta, theta_fixed, fit_Mstar):
-        """Unpack the model parameters."""
-        if fit_Mstar:
-            try:
-                x0, y0, Mstar, PA, vlsr, psi, side = theta
-            except:
-                x0, y0, Mstar, PA, vlsr = theta
-                psi = 0.0
-                side = 0.0
-            inc = theta_fixed
+        # Model specific values.
+
+        if z_type == 'conical':
+            psi = theta[5]
+            if not 0.0 <= psi <= 45.:
+                return -np.inf
+            params = [psi]
+
+        elif z_type == 'flared':
+            aspect_ratio = theta[5]
+            flaring_angle = theta[6]
+            if not 0.0 <= aspect_ratio <= 0.5:
+                return -np.inf
+            if not 0.0 <= flaring_angle <= 2.0:
+                return -np.inf
+            params = [aspect_ratio, flaring_angle]
+
         else:
-            try:
-                x0, y0, inc, PA, vlsr, psi, side = theta
-            except:
-                x0, y0, inc, PA, vlsr = theta
-                psi = 0.0
-                side = 0.0
-            Mstar = theta_fixed
-        return x0, y0, inc, Mstar, PA, vlsr, psi, side
+            params = None
+
+        # Make the (convolved) model.
+
+        vkep = self._get_model(x0=x0, y0=y0, inc=inc, PA=PA, vlsr=vlsr,
+                               mstar=mstar, z_type=z_type, params=params,
+                               tilt=tilt, r_min=r_min, r_max=r_max, beam=beam)
+
+        # Calculate chi-squared and return.
+
+        mask = np.logical_and(np.isfinite(self.data), np.isfinite(vkep))
+        lnx2 = np.power((self.data[mask] - vkep[mask]) / error[mask], 2)
+        lnx2 -= np.log(error[mask]**2 * np.sqrt(2 * np.pi))
+        lnx2 = -0.5 * np.nansum(lnx2)
+        return lnx2 if np.isfinite(lnx2) else -np.inf
+
+    def _get_model(self, x0, y0, inc, PA, vlsr, mstar, z_type, params, tilt,
+                   r_min, r_max, beam):
+        """Return the Keplerian rotation model."""
+        nearest = 'north' if tilt >= 0 else 'south'
+        vkep = self.keplerian_profile(x0=x0, y0=y0, inc=inc, PA=PA, vlsr=vlsr,
+                                      mstar=mstar, z_type=z_type,
+                                      params=params, r_min=r_min, r_max=r_max,
+                                      nearest=nearest)
+        if beam:
+            return self._convolve_image(vkep / 1e3, self._beamkernel())
+        return vkep / 1e3
 
     def _estimate_PA(self, clip=5):
         """Estimate the PA of the disk."""
         t = np.where(self.data <= np.nanpercentile(self.data, [clip]),
-                     self.disk_coordinates(0.0, 0.0, self.inc, 0.0)[1], np.nan)
+                     self.disk_coords(0.0, 0.0, self.inc, 0.0)[1], np.nan)
         return np.nanmean((np.degrees(t) + 360.) % 360.) + 45.
+
+    def _random_p0(self, p0, scatter, nwalkers):
+        """Get the starting positions."""
+        p0 = np.squeeze(p0)
+        dp0 = np.random.randn(nwalkers * len(p0)).reshape(nwalkers, len(p0))
+        dp0 = np.where(p0 == 0.0, 1.0, p0)[None, :] * (1.0 + scatter * dp0)
+        return np.where(p0[None, :] == 0.0, dp0 - 1.0, dp0)
 
     # == Plotting Functions == #
 
-    def _plot_best_fit(self, samples, theta_fixed, fit_Mstar, beam, r_min=None,
-                       r_max=None):
+    def _plot_bestfit(self, samples, theta_fixed, fit_mstar, error, beam,
+                      r_min, r_max, z_type, nearest):
         """Plot the best fit moment map."""
-        model = self._get_masked_model(theta=np.median(samples, axis=0),
-                                       theta_fixed=theta_fixed,
-                                       fit_Mstar=fit_Mstar, beam=beam,
-                                       r_min=r_min, r_max=r_max)
+
+        theta = np.median(samples, axis=0)
+
+        x0, y0 = theta[0], theta[1]
+        if fit_mstar:
+            mstar = theta[2]
+            inc = self.inc
+        else:
+            inc = theta[2]
+            mstar = self.mstar
+        PA = theta[3]
+        vlsr = theta[4]
+        if z_type != 'thin' and nearest is None:
+            tilt = theta[-1]
+        else:
+            tilt = 1.0 if nearest == 'north' else -1.0
+        if z_type == 'conical':
+            params = [theta[5]]
+        elif z_type == 'flared':
+            params = [theta[5], theta[6]]
+        else:
+            params = None
+
+        model = self._get_model(x0=x0, y0=y0, inc=inc, PA=PA, vlsr=vlsr,
+                                mstar=mstar, z_type=z_type, params=params,
+                                tilt=tilt, r_min=r_min, r_max=r_max, beam=beam)
+
         import matplotlib.cm as cm
         import matplotlib.pyplot as plt
 
         fig, ax = plt.subplots()
         im = ax.contourf(self.xaxis, self.yaxis, model, 30, cmap=cm.bwr)
-        cb = plt.colorbar(im, pad=0.02, ticks=np.arange(10))
+        cb = plt.colorbar(im, pad=0.02, ticks=np.arange(-20, 20))
         cb.set_label('Line of Sight Velocity (km/s)', rotation=270,
                      labelpad=15)
         ax.set_aspect(1)

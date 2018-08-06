@@ -51,7 +51,6 @@ class imagecube:
         self.nypix = self.yaxis.size
         self.dpix = np.mean([abs(np.diff(self.xaxis)),
                              abs(np.diff(self.yaxis))])
-        self.xaxis -= self.dpix
 
         # Spectral axis.
         self.velax = self._readvelocityaxis()
@@ -129,12 +128,13 @@ class imagecube:
 
         # Geometrically thin disk.
         if z_type == 'thin':
-            if get_z and self.verbose:
-                print("No height associated with thin disk.")
             if frame == 'cartesian':
-                return self._get_midplane_cart_coords(x0, y0, inc, PA)
+                c1, c2 = self._get_midplane_cart_coords(x0, y0, inc, PA)
             else:
-                return self._get_midplane_polar_coords(x0, y0, inc, PA)
+                c1, c2 = self._get_midplane_polar_coords(x0, y0, inc, PA)
+            if get_z:
+                return c1, c2, np.zeros(c1.shape)
+            return c1, c2
 
         # If not thin then must have some vertical extent.
         # Define the height functions here to pass to the other functions.
@@ -208,10 +208,11 @@ class imagecube:
 
     # == Radial Profiles == #
 
-    def radial_profile(self, rpnts=None, rbins=None, x0=0.0, y0=0.0,
-                       inc=0.0, PA=0.0, collapse='max', statistic='mean',
-                       PA_min=None, PA_max=None, exclude_PA=False,
-                       beam_factor=False, clip_values=None):
+    def radial_profile(self, rpnts=None, rbins=None, x0=0.0, y0=0.0, inc=0.0,
+                       PA=0.0, z_type='thin', nearest='north', params=None,
+                       collapse='max', statistic='mean', PA_min=None,
+                       PA_max=None, exclude_PA=False, beam_factor=False,
+                       clip_values=None):
         """
         Returns the azimuthally averaged intensity profile. If the data is 3D,
         then it is collapsed along the spectral axis.
@@ -251,16 +252,15 @@ class imagecube:
 
         # Define the points to sample the radial profile at.
         rbins, rpnts = self._radial_sampling(rbins=rbins, rvals=rpnts)
-        try:
-            rvals = self.disk_coordinates_3D()[0].flatten()
-        except:
-            if self.verbose:
-                print("WARNING: Assuming thin disk.")
-            rvals = self.disk_coordinates(x0, y0, inc, PA)[0].flatten()
+        rvals = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA, z_type=z_type,
+                                 params=params, nearest=nearest)[0].flatten()
 
         # Apply the masks.
-        mask = self._get_mask(r_min=rbins[0], r_max=rbins[-1], PA_min=PA_min,
-                              PA_max=PA_max, exclude_PA=exclude_PA).flatten()
+        mask = self.get_mask(r_min=rbins[0], r_max=rbins[-1], PA_min=PA_min,
+                             PA_max=PA_max, exclude_PA=exclude_PA, x0=x0,
+                             y0=y0, inc=inc, PA=PA, z_type=z_type,
+                             params=params, nearest=nearest).flatten()
+
         if mask.size != to_avg.size:
             raise ValueError("Mask and data sizes do not match.")
         if clip_values is not None:
@@ -406,94 +406,40 @@ class imagecube:
                        zorder=kwargs.get('zorder', 1000))
         ax.add_patch(beam)
 
+    # == Rotation Functions == #
+
+    def keplerian_profile(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z_type='thin',
+                          nearest='north', params=None,  mstar=1.0, r_max=None,
+                          r_min=None, dist=100., vlsr=0.0):
+        """Return a Keplerian rotation profile (for the near side) in [m/s]."""
+        rvals, tvals, zvals = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA,
+                                               z_type=z_type, nearest=nearest,
+                                               params=params, get_z=True,
+                                               frame='polar')
+        v_rot = sc.G * mstar * self.msun * np.power(rvals * dist * sc.au, 2.0)
+        v_rot /= np.power(np.hypot(rvals, zvals) * sc.au * dist, 3.0)
+        vrot = np.sqrt(v_rot) * np.cos(tvals) * np.sin(np.radians(inc)) + vlsr
+        r_min = rvals.min() if r_min is None else r_min
+        r_max = rvals.max() if r_max is None else r_max
+        mask = np.logical_and(rvals >= r_min, rvals <= r_max)
+        return np.where(mask, vrot, np.nan)
+
     # == Functions to write a Keplerian mask for CLEANing. == #
 
-    def _keplerian_profile_psi(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0,
-                               mstar=1.0, rout=None, rin=None, dist=100.,
-                               vlsr=0.0, psi=0.0):
-        """Keplerian profile including a conical emission surface."""
-
-        # Pixel coordinates.
-        near, far = self.disk_coordinates_psi(x0, y0, inc, PA, psi)
-        near[0] *= dist
-        far[0] *= dist
-
-        # Near side rotation.
-        v_near = np.sqrt(sc.G * mstar * self.msun / near[0] / sc.au)
-        v_near *= np.sin(np.radians(inc)) * np.cos(near[1] + np.radians(180.))
-        v_near += vlsr
-
-        # Far side rotation.
-        v_far = np.sqrt(sc.G * mstar * self.msun / far[0] / sc.au)
-        v_far *= np.sin(np.radians(inc)) * np.cos(far[1] + np.radians(180.))
-        v_far += vlsr
-
-        # Clip inner and outer regions before returning.
-        if rin is not None:
-            v_near = np.where(near[0] < rin, np.nan, v_near)
-            v_far = np.where(far[0] < rin, np.nan, v_far)
-        if rout is not None:
-            v_near = np.where(near[0] > rout, np.nan, v_near)
-            v_far = np.where(far[0] > rout, np.nan, v_far)
-        return v_near, v_far
-
-    def _keplerian_profile(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, mstar=1.0,
-                           rout=None, rin=None, dist=100., vlsr=0.0):
-        """Make a Keplerian mask for CLEANing."""
-
-        # Pixel coordinates.
-        rvals, tvals = self.disk_coordinates(x0, y0, inc, PA)
-        rvals *= dist
-
-        # Keplerian rotation profile.
-        vkep = np.sqrt(sc.G * mstar * self.msun / rvals / sc.au)
-        vkep *= np.sin(np.radians(inc)) * np.cos(tvals + np.radians(180.))
-        vkep += vlsr
-
-        # Mask non-disk regions.
-        if rin is not None:
-            vkep = np.where(rvals < rin, np.nan, vkep)
-        if rout is not None:
-            vkep = np.where(rvals > rout, np.nan, vkep)
-        return vkep
-
-    def _dV_profile(self, x0, y0, inc, PA, dV, dVq=0.0):
-        """Return a radial linewidth profile."""
-        if dVq == 0.0:
-            return dV
-        rdisk = self.disk_coordinates(x0, y0, inc, PA)[0]
-        return dV * np.power(rdisk, dVq)
-
-    def _keplerian_mask(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, mstar=1.0,
-                        rout=None, rin=None, dist=100, vlsr=0.0, dV=250.,
-                        psi=0.0, dVq=0.0):
-        """Generate the Keplerian mask as a cube. dV is FWHM of line."""
-        mask = np.ones(self.data.shape) * self.velax[:, None, None]
-        dV = self._dV_profile(x0, y0, inc, PA, dV, dVq)
-
-        # Flat disk.
-        if psi == 0.0:
-            vkep = self._keplerian_profile(x0=x0, y0=y0, inc=inc, PA=PA,
-                                           mstar=mstar, rout=rout, rin=rin,
-                                           dist=dist, vlsr=vlsr)
-            vkep = abs(mask - np.ones(self.data.shape) * vkep[None, :, :])
-            return np.where(vkep <= dV, 1., 0.)
-
-        # Flared disk.
-        vkep = self._keplerian_profile_psi(x0=x0, y0=y0, inc=inc, PA=PA,
-                                           mstar=mstar, rout=rout, rin=rin,
-                                           dist=dist, vlsr=vlsr, psi=psi)
-        vkep1 = abs(mask - np.ones(self.data.shape) * vkep[0][None, :, :])
-        vkep2 = abs(mask - np.ones(self.data.shape) * vkep[1][None, :, :])
-        return np.where(np.logical_or(vkep1 <= dV, vkep2 <= dV), 1., 0.)
-
-    def CLEAN_mask(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, mstar=1.0, rout=None,
-                   rin=None, dist=100., vlsr=0.0, dV=250., nbeams=0.0, psi=0.0,
+    def CLEAN_mask(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z_type='thin',
+                   nearest='north', params=None, mstar=1.0, r_max=None,
+                   r_min=None, dist=100., vlsr=0.0, dV=250., nbeams=0.0,
                    dVq=0.0, fname=None, fast=True, return_mask=False):
-        """Save a CASA readable mask using the spectral information."""
+        """
+        Save a CASA readable mask using the spectral information.
+        More details to be written soon...
+        """
 
-        # Account for hyperfine components and emission surfaces.
+        raise NotImplementedError("Work in progress...")
+
+        # Allow for multiple surfaces.
         vlsr = np.atleast_1d(vlsr)
+        # params = [0.0]
         psis = [0.0] if psi == 0.0 else np.arange(0.0, psi, 5.0)
         mask = [self._keplerian_mask(x0=x0, y0=y0, inc=inc, PA=PA, mstar=mstar,
                                      rout=rout, rin=rin, dist=dist, vlsr=v,
@@ -525,16 +471,45 @@ class imagecube:
             hdu.writeto(fname.replace('.fits', '') + '.fits',
                         clobber=True, output_verify='fix')
 
+    def _dV_profile(self, x0, y0, inc, PA, dV, dVq=0.0):
+        """Return a radial linewidth profile."""
+        if dVq == 0.0:
+            return dV
+        rdisk = self.disk_coordinates(x0, y0, inc, PA)[0]
+        return dV * np.power(rdisk, dVq)
+
+    def _keplerian_mask(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, mstar=1.0,
+                        rout=None, rin=None, dist=100, vlsr=0.0, dV=250.,
+                        psi=0.0, dVq=0.0):
+        """Generate the Keplerian mask as a cube. dV is FWHM of line."""
+        mask = np.ones(self.data.shape) * self.velax[:, None, None]
+        dV = self._dV_profile(x0, y0, inc, PA, dV, dVq)
+
+        # Flat disk.
+        if psi == 0.0:
+            vkep = self._keplerian_profile(x0=x0, y0=y0, inc=inc, PA=PA,
+                                           mstar=mstar, rout=rout, rin=rin,
+                                           dist=dist, vlsr=vlsr)
+            vkep = abs(mask - np.ones(self.data.shape) * vkep[None, :, :])
+            return np.where(vkep <= dV, 1., 0.)
+
+        # Flared disk.
+        vkep = self._keplerian_profile_psi(x0=x0, y0=y0, inc=inc, PA=PA,
+                                           mstar=mstar, rout=rout, rin=rin,
+                                           dist=dist, vlsr=vlsr, psi=psi)
+        vkep1 = abs(mask - np.ones(self.data.shape) * vkep[0][None, :, :])
+        vkep2 = abs(mask - np.ones(self.data.shape) * vkep[1][None, :, :])
+        return np.where(np.logical_or(vkep1 <= dV, vkep2 <= dV), 1., 0.)
+
     # == Masking Functions == #
 
-    def _get_mask(self, r_min=None, r_max=None, PA_min=None, PA_max=None,
-                  exclude_r=False, exclude_PA=False, x0=0.0, y0=0.0, inc=0.0,
-                  PA=0.0):
+    def get_mask(self, r_min=None, r_max=None, PA_min=None, PA_max=None,
+                 exclude_r=False, exclude_PA=False, x0=0.0, y0=0.0, inc=0.0,
+                 PA=0.0, z_type='thin', params=None, nearest='north'):
         """Returns a 2D mask for pixels in the given region."""
-        try:
-            rvals, tvals = self.disk_coordinates_3D(x0, y0, inc)
-        except:
-            rvals, tvals = self.disk_coordinates(x0, y0, inc, PA)
+        rvals, tvals = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA,
+                                        z_type=z_type, params=params,
+                                        nearest=nearest, frame='polar')
         r_min = rvals.min() if r_min is None else r_min
         r_max = rvals.max() if r_max is None else r_max
         PA_min = tvals.min() if PA_min is None else PA_min
