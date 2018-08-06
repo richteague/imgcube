@@ -9,7 +9,6 @@ Things still to do:
 
 import os
 import numpy as np
-import functions
 from astropy.io import fits
 import scipy.constants as sc
 from astropy.convolution import Kernel
@@ -54,6 +53,7 @@ class imagecube:
                              abs(np.diff(self.yaxis))])
         self.xaxis -= self.dpix
 
+        # Spectral axis.
         self.velax = self._readvelocityaxis()
         self.chan = np.mean(np.diff(self.velax))
 
@@ -87,6 +87,124 @@ class imagecube:
             self._clip_cube(clip)
 
         return
+
+    # == Coordinate Deprojection == #
+
+    def disk_coords(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, frame='polar',
+                    z_type='thin', params=None, nearest='north', get_z=False):
+        """
+        Return the disk coordinates given the specified deprojection values.
+
+        - Input -
+
+        x0, y0  :   Disk offset in [arcsec].
+        inc     :   Inclination of disk in [degrees].
+        PA      :   Position angle of the disk in [degrees].
+        frame   :   Coordinates returned, either 'cartesian' or 'polar'.
+        z_type  :   Type of surface: 'thin', 'conical', 'flared', 'func'.
+        params  :   Parameters need for the specified surface. Coming soon.
+        nearest :   Which side of the disk is nearest to the observer.
+        get_z   :   Return the z value.
+
+        - Output -
+
+        x, y    :   Disk coordinates if frame='cartesian'.
+        r, t    :   Disk coordinates if frame='polar'.
+        """
+
+        # Check the input variables.
+        frame = frame.lower()
+        if frame not in ['cartesian', 'polar']:
+            raise ValueError("frame must be 'cartesian' or 'polar'.")
+        z_type = z_type.lower()
+        if z_type not in ['thin', 'conical', 'flared', 'func']:
+            raise ValueError("Unknown z_type value.")
+        nearest = nearest.lower()
+        if nearest not in ['north', 'south']:
+            raise ValueError("Either 'north' or 'south' must be closer.")
+        tilt = 1.0 if nearest == 'north' else -1.0
+
+        # Rescale for the PA definition (major axis east of north).
+        PA -= 45.
+
+        # Geometrically thin disk.
+        if z_type == 'thin':
+            if get_z and self.verbose:
+                print("No height associated with thin disk.")
+            if frame == 'cartesian':
+                return self._get_midplane_cart_coords(x0, y0, inc, PA)
+            else:
+                return self._get_midplane_polar_coords(x0, y0, inc, PA)
+
+        # If not thin then must have some vertical extent.
+        # Define the height functions here to pass to the other functions.
+        if z_type == 'conical':
+            def func(r):
+                return r * np.tan(np.radians(params))
+        elif z_type == 'flared':
+            def func(r):
+                return params[0] * np.power(r, params[1])
+        else:
+            func = params
+        assert callable(func)
+
+        # Geometrically thick disk.
+        if frame == 'cartesian':
+            c1, c2 = self._get_flared_cart_coords(x0, y0, inc, PA, func, tilt)
+            if get_z:
+                return c1, c2, func(np.hypot(c1, c2))
+        else:
+            c1, c2 = self._get_flared_polar_coords(x0, y0, inc, PA, func, tilt)
+            if get_z:
+                return c1, c2, func(c1)
+        return c1, c2
+
+        # Calculate the height.
+
+    def _rotate_coords(self, x, y, PA):
+        """Rotate (x, y) by PA [deg]."""
+        x_rot = x * np.cos(np.radians(PA)) - y * np.sin(np.radians(PA))
+        y_rot = y * np.cos(np.radians(PA)) + x * np.sin(np.radians(PA))
+        return x_rot, y_rot
+
+    def _deproject_coords(self, x, y, inc):
+        """Deproject (x, y) by inc [deg]."""
+        return x, y / np.cos(np.radians(inc))
+
+    def _get_cart_sky_coords(self, x0, y0):
+        """Return caresian sky coordinates in [arcsec, arcsec]."""
+        return np.meshgrid(self.xaxis[::-1] + x0, self.yaxis + y0)
+
+    def _get_polar_sky_coords(self, x0, y0):
+        """Return polar sky coordinates in [arcsec, radians]."""
+        x_sky, y_sky = self._get_cartesian_sky_coords(x0, y0)
+        return np.hypot(y_sky, x_sky), np.arctan2(y_sky, x_sky)
+
+    def _get_midplane_cart_coords(self, x0, y0, inc, PA):
+        """Return cartesian coordaintes of midplane in [arcsec, arcsec]."""
+        x_sky, y_sky = self._get_cart_sky_coords(x0, y0)
+        x_rot, y_rot = self._rotate_coords(x_sky, y_sky, PA)
+        return self._deproject_coords(x_rot, y_rot, inc)
+
+    def _get_midplane_polar_coords(self, x0, y0, inc, PA):
+        """Return the polar coordinates of midplane in [arcsec, radians]."""
+        x_mid, y_mid = self._get_midplane_cart_coords(x0, y0, inc, PA)
+        return np.hypot(y_mid, x_mid), np.arctan2(y_mid, x_mid)
+
+    def _get_flared_polar_coords(self, x0, y0, inc, PA, func, tilt):
+        """Return polar coordinates of surface in [arcsec, radians]."""
+        x_mid, y_mid = self._get_midplane_cart_coords(x0, y0, inc, PA)
+        r_mid, t_mid = self._get_midplane_polar_coords(x0, y0, inc, PA)
+        for _ in range(5):
+            y_tmp = y_mid - func(r_mid) * tilt * np.tan(np.radians(inc))
+            r_mid, t_mid = np.hypot(y_tmp, x_mid), np.arctan2(y_tmp, x_mid)
+        return r_mid, t_mid
+
+    def _get_flared_cart_coords(self, x0, y0, inc, PA, func, tilt):
+        """Return cartesian coordinates of surface in [arcsec, arcsec]."""
+        r_mid, t_mid = self._get_flared_polar_coords(x0, y0, inc,
+                                                     PA, func, tilt)
+        return r_mid * np.cos(t_mid), r_mid * np.sin(t_mid)
 
     # == Radial Profiles == #
 
@@ -406,46 +524,6 @@ class imagecube:
         except TypeError:
             hdu.writeto(fname.replace('.fits', '') + '.fits',
                         clobber=True, output_verify='fix')
-
-    # == Functions to deproject the pixel coordinates. == #
-
-    def disk_coordinates_psi(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, psi=0.0):
-        """
-        Deprojected pixel coordinates in [arcsec, radians]. Takes into account
-        a convical emission surface as in Rosenfeld et al. (2013).
-        """
-        x_sky, y_sky = np.meshgrid(self.xaxis[::-1] - x0 - self.dpix,
-                                   self.yaxis - y0)
-        x_rot, y_rot = self._rotate(x_sky, y_sky, PA + 90.)
-        t_pos, t_neg = functions.solve_quadratic(x_rot, y_rot, inc, psi)
-        y_disk = y_rot / np.cos(np.radians(inc))
-        y_near = y_disk + t_pos * np.sin(np.radians(inc))
-        y_far = y_disk + t_neg * np.sin(np.radians(inc))
-        r_near, r_far = np.hypot(x_rot, y_near), np.hypot(x_rot, y_far)
-        t_near, t_far = np.arctan2(y_near, x_rot), np.arctan2(y_far, x_rot)
-        return [r_near, t_near], [r_far, t_far]
-
-    def disk_coordinates(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0):
-        """
-        Deprojected pixel coordinates in [arcsec, radians].
-        Note that PA is relative to the eastern major axis.
-        """
-        x_sky, y_sky = np.meshgrid(self.xaxis[::-1] - x0 - self.dpix,
-                                   self.yaxis - y0)
-        x_rot, y_rot = self._rotate(x_sky, y_sky, PA + 90.)
-        x_dep, y_dep = self._incline(x_rot, y_rot, inc)
-        return np.hypot(x_dep, y_dep), np.arctan2(y_dep, x_dep)
-
-    def _rotate(self, x, y, PA):
-        """Rotate (x, y) around the center by PA [deg]."""
-        PArad = np.radians(PA + 90.)
-        x_rot = x * np.cos(PArad) + y * np.sin(PArad)
-        y_rot = y * np.cos(PArad) - x * np.sin(PArad)
-        return x_rot, y_rot
-
-    def _incline(self, x, y, inc):
-        """Incline (x, y) by inc [deg]."""
-        return x, y / np.cos(np.radians(inc))
 
     # == Masking Functions == #
 
