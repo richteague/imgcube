@@ -31,9 +31,9 @@ class imagecube:
         if suppress_warnings:
             import warnings
             warnings.filterwarnings("ignore")
-            self.verbose = True
-        else:
             self.verbose = False
+        else:
+            self.verbose = True
 
         # Read in the data and header.
         self.path = os.path.expanduser(path)
@@ -52,6 +52,7 @@ class imagecube:
         self.nypix = self.yaxis.size
         self.dpix = np.mean([abs(np.diff(self.xaxis)),
                              abs(np.diff(self.yaxis))])
+        self.xaxis -= self.dpix
 
         self.velax = self._readvelocityaxis()
         self.chan = np.mean(np.diff(self.velax))
@@ -135,6 +136,8 @@ class imagecube:
         try:
             rvals = self.disk_coordinates_3D()[0].flatten()
         except:
+            if self.verbose:
+                print("WARNING: Assuming thin disk.")
             rvals = self.disk_coordinates(x0, y0, inc, PA)[0].flatten()
 
         # Apply the masks.
@@ -281,7 +284,8 @@ class imagecube:
                        width=self.bmin, height=self.bmaj, angle=-self.bpa,
                        fill=False, hatch=kwargs.get('hatch', '////////'),
                        lw=kwargs.get('linewidth', kwargs.get('lw', 1)),
-                       color=kwargs.get('color', kwargs.get('c', 'k')))
+                       color=kwargs.get('color', kwargs.get('c', 'k')),
+                       zorder=kwargs.get('zorder', 1000))
         ax.add_patch(beam)
 
     # == Functions to write a Keplerian mask for CLEANing. == #

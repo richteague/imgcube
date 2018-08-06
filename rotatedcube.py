@@ -21,12 +21,14 @@ import scipy.constants as sc
 class rotatedcube(imagecube):
 
     def __init__(self, path, inc=None, mstar=None, dist=None, x0=0.0, y0=0.0,
-                 verbose=True, clip=None, suppress_warnings=False):
+                 clip=None, kelvin=True, suppress_warnings=False):
         """Read in the rotated image cube."""
 
         # Initilize the class.
-        imagecube.__init__(self, path, absolute=False, kelvin=True, clip=clip,
-                           suppress_warnings=suppress_warnings)
+        imagecube.__init__(self, path, absolute=False, kelvin=kelvin,
+                           clip=clip, suppress_warnings=suppress_warnings)
+        if not kelvin and self.verbose:
+            print("WARNING: Not using Kelvin.")
 
         # Get the deprojected pixel values assuming a thin disk.
         self.x0, self.y0 = x0, y0
@@ -131,7 +133,7 @@ class rotatedcube(imagecube):
     def _deprojected_spectrum(self, spectra, angles, vrot, resample=True):
         """Collapsed deprojected spectrum."""
         if resample:
-            return self.deprojected_spectrum(spectra, angles, vrot)
+            return self.velax, self.deprojected_spectrum(spectra, angles, vrot)
         return self.deprojected_spectra(spectra, angles, vrot)
 
     # == Rotation Profiles == #

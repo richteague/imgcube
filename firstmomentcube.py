@@ -138,7 +138,7 @@ class firstmomentcube(imagecube):
         sampler = emcee.EnsembleSampler(nwalkers, 5, self._ln_probability,
                                         args=args)
         sampler.run_mcmc(p0, nburnin + nsteps)
-        samples = sampler.chain[:, -nsteps:]
+        samples = sampler.chain[:, -int(nsteps):]
         samples = samples.reshape(-1, samples.shape[-1])
 
         # Allows for PA to be negative.
