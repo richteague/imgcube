@@ -89,7 +89,7 @@ class imagecube:
 
     # == Coordinate Deprojection == #
 
-    def disk_coords(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, frame='polar',
+    def disk_coords(self, x0=0.0, y0=0.0, inc=0.0, PA=45.0, frame='polar',
                     z_type='thin', params=None, nearest='north', get_z=False):
         """
         Return the disk coordinates given the specified deprojection values.
@@ -101,9 +101,18 @@ class imagecube:
         PA      :   Position angle of the disk in [degrees].
         frame   :   Coordinates returned, either 'cartesian' or 'polar'.
         z_type  :   Type of surface: 'thin', 'conical', 'flared', 'func'.
-        params  :   Parameters need for the specified surface. Coming soon.
+        params  :   Parameters need for the specified surface. If a 'thin' disk
+                    is considered, then params=None. If a 'conical' disk then
+                    params=[psi] where psi is the opening angle between the
+                    surface and the midplane in degrees. If 'flared' then the
+                    surface is a power-law described by
+
+                        z(r) = aspect_ratio * r**flaring_angle
+
+                    and thus params=[aspect_ratio, flaring_angle].
         nearest :   Which side of the disk is nearest to the observer.
-        get_z   :   Return the z value.
+        get_z   :   Return the z value. If assuming a thin disk then this will
+                    be an array of zeros.
 
         - Output -
 
@@ -177,7 +186,7 @@ class imagecube:
 
     def _get_polar_sky_coords(self, x0, y0):
         """Return polar sky coordinates in [arcsec, radians]."""
-        x_sky, y_sky = self._get_cartesian_sky_coords(x0, y0)
+        x_sky, y_sky = self._get_cart_sky_coords(x0, y0)
         return np.hypot(y_sky, x_sky), np.arctan2(y_sky, x_sky)
 
     def _get_midplane_cart_coords(self, x0, y0, inc, PA):
@@ -215,7 +224,7 @@ class imagecube:
                        clip_values=None):
         """
         Returns the azimuthally averaged intensity profile. If the data is 3D,
-        then it is collapsed along the spectral axis.
+        then it is collapsed along the spectral axis with some function..
 
         - Input -
 
@@ -225,6 +234,12 @@ class imagecube:
         x0, y0:             Source centre offset in [arcsec].
         inc, PA:            Inclination and position angle of the disk, both in
                             [degrees].
+        z_type:             The type of surface to assume, either 'thin' for a
+                            geometrically thin disk, or 'conical' or 'flared'.
+                            For the latter two options, see disk_coords().
+        nearest:            If a 3D disk is considered, which side of the disk
+                            is closest to the observer: 'north' or 'south'.
+        params:             Parameters associated with the chosen 'z_type'.
         collapse:           Method to collapse the cube: 'max', maximum value
                             along the spectral axis; 'sum', sum along the
                             spectral axis; 'int', integrated along the spectral
@@ -431,22 +446,65 @@ class imagecube:
                    r_min=None, dist=100., vlsr=0.0, dV=250., nbeams=0.0,
                    dVq=0.0, fname=None, fast=True, return_mask=False):
         """
-        Save a CASA readable mask using the spectral information.
-        More details to be written soon...
+        Using the attached FITS cube, generate a Keplerian mask for CASA. This
+        also allows for 3D disks and the change in rotation pattern associated
+        with them. These are described by the `z_type` parameter and the params
+        argument.
+
+            'thin'      : A geometrically thin disk.
+            'conical'   : A straight surface with params=psi where psi is the
+                          angle between the surface and the midplane in (deg).
+                          For 12CO, psi ~ 15deg.
+            'flared'    : A power-law surface with params=[z0, q] where z0 is
+                          the height of the surface at 1 arcsec and q is the
+                          power-law exponent. For 12CO, z0 ~ 0.3 and q ~ 1.2.
+
+        Additionally we can change the local linewidth as a function of radius.
+        This is simply a power-law function,
+
+            dV = dV0 * (r / 1")**dVq
+
+        - Inputs -
+
+        Coming Soon.
+
+        - Outputs -
+
+        Coming Soon.
         """
 
-        raise NotImplementedError("Work in progress...")
+        # Check what sort of surface is wanted.
+        z_type = z_type.lower()
+        if z_type not in ['thin', 'conical', 'flared']:
+            raise ValueError("Unknown 'z_type'.")
 
-        # Allow for multiple surfaces.
+        # Make sure we can iterate over the params to till in the midplane.
+        params = np.atleast_1d(params)
+        if z_type == 'thin':
+            iter_params = np.array([params[0]])
+        elif z_type == 'conical':
+            iter_params = np.arange(0, params[0], 4.0)
+            iter_params = np.linspace(0, params[0], iter_params.size + 1)
+        else:
+            iter_params = np.arange(0, params[0], 0.05)
+            iter_params = np.linspace(0, params[0], iter_params.size + 1)
+            iter_params = np.vstack([iter_params,
+                                     params[1] * np.ones(iter_params.size)]).T
+        if iter_params.shape[0] > 5 and self.verbose:
+            print("WARNING: Large number of intermediate masks. May freeze.")
+
+        print iter_params
+
+        # Allow for multiple hyperfine components.
         vlsr = np.atleast_1d(vlsr)
-        # params = [0.0]
-        psis = [0.0] if psi == 0.0 else np.arange(0.0, psi, 5.0)
-        mask = [self._keplerian_mask(x0=x0, y0=y0, inc=inc, PA=PA, mstar=mstar,
-                                     rout=rout, rin=rin, dist=dist, vlsr=v,
-                                     dV=dV, dVq=dVq, psi=p)
-                for v in vlsr for p in psis]
-        mask = np.nansum(mask, axis=0)
-        mask = np.where(mask > 0, 1, 0)
+
+        # Loop over all the different parameters and combine the masks.
+        mask = [self._keplerian_mask(x0=x0, y0=y0, inc=inc, PA=PA,
+                                     z_type=z_type, nearest=nearest, params=p,
+                                     mstar=mstar, r_max=r_max, r_min=r_min,
+                                     dist=dist, vlsr=vlsr, dV=dV, dVq=dVq)
+                for v in vlsr for p in iter_params]
+        mask = np.where(np.nansum(mask, axis=0) > 0, 1, 0)
         if mask.shape != self.data.shape:
             raise ValueError("Mask shape is not the same as the data.")
 
@@ -463,7 +521,7 @@ class imagecube:
             fname = self.path.replace('.fits', '.mask.fits')
         hdu = fits.open(self.path)
         hdu[0].data = mask
-        hdu[0].scale('int16')  # Might need to be int32?
+        hdu[0].scale('int16')
         try:
             hdu.writeto(fname.replace('.fits', '') + '.fits',
                         overwrite=True, output_verify='fix')
@@ -478,28 +536,33 @@ class imagecube:
         rdisk = self.disk_coordinates(x0, y0, inc, PA)[0]
         return dV * np.power(rdisk, dVq)
 
-    def _keplerian_mask(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, mstar=1.0,
-                        rout=None, rin=None, dist=100, vlsr=0.0, dV=250.,
-                        psi=0.0, dVq=0.0):
+    def _keplerian_mask(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z_type='thin',
+                        nearest='north', params=None, mstar=1.0, r_max=None,
+                        r_min=None, dist=100, vlsr=0.0, dV=250., dVq=0.0):
         """Generate the Keplerian mask as a cube. dV is FWHM of line."""
+
+        # Start the mask.
+        params = np.atleast_1d(params)
         mask = np.ones(self.data.shape) * self.velax[:, None, None]
         dV = self._dV_profile(x0, y0, inc, PA, dV, dVq)
 
-        # Flat disk.
-        if psi == 0.0:
-            vkep = self._keplerian_profile(x0=x0, y0=y0, inc=inc, PA=PA,
-                                           mstar=mstar, rout=rout, rin=rin,
-                                           dist=dist, vlsr=vlsr)
-            vkep = abs(mask - np.ones(self.data.shape) * vkep[None, :, :])
-            return np.where(vkep <= dV, 1., 0.)
+        # Rotation of the front side of the disk.
+        v1 = self.keplerian_profile(x0=x0, y0=y0, inc=inc, PA=PA,
+                                    z_type=z_type, nearest=nearest,
+                                    params=params,  mstar=mstar, r_max=r_max,
+                                    r_min=r_min, dist=dist, vlsr=vlsr)
+        v1 = abs(mask - np.ones(self.data.shape) * v1[None, :, :])
+        if z_type == 'thin' or params[0] == 0.0:
+            return np.where(v1 <= dV, 1., 0.)
 
-        # Flared disk.
-        vkep = self._keplerian_profile_psi(x0=x0, y0=y0, inc=inc, PA=PA,
-                                           mstar=mstar, rout=rout, rin=rin,
-                                           dist=dist, vlsr=vlsr, psi=psi)
-        vkep1 = abs(mask - np.ones(self.data.shape) * vkep[0][None, :, :])
-        vkep2 = abs(mask - np.ones(self.data.shape) * vkep[1][None, :, :])
-        return np.where(np.logical_or(vkep1 <= dV, vkep2 <= dV), 1., 0.)
+        # Rotation of the far side of the disk if appropriate.
+        params[0] = -params[0]
+        v2 = self.keplerian_profile(x0=x0, y0=y0, inc=inc, PA=PA,
+                                    z_type=z_type, nearest=nearest,
+                                    params=params,  mstar=mstar, r_max=r_max,
+                                    r_min=r_min, dist=dist, vlsr=vlsr)
+        v2 = abs(mask - np.ones(self.data.shape) * v2[None, :, :])
+        return np.where(np.logical_or(v1 <= dV, v2 <= dV), 1., 0.)
 
     # == Masking Functions == #
 

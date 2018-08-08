@@ -37,7 +37,7 @@ class firstmomentcube(imagecube):
                       r_max=None, z_type='thin', nearest=None, nwalkers=None,
                       nburnin=300, nsteps=300, scatter=1e-2, error=None,
                       plot_walkers=True, plot_corner=True, plot_bestfit=True,
-                      return_samples=False):
+                      return_samples=False, return_sampler=False):
         """
         Fit a Keplerian rotation profile to a first / ninth moment map.
 
@@ -78,7 +78,7 @@ class firstmomentcube(imagecube):
                 if nearest is None:
                     p0 += [0.0]
             elif z_type == 'flared':
-                p0 += [0.1, 1.2]
+                p0 += [0.3, 1.25]
                 if nearest is None:
                     p0 += [0.0]
             if self.verbose:
@@ -127,6 +127,8 @@ class firstmomentcube(imagecube):
                                r_min, r_max, z_type, nearest)
 
         # Return the fits.
+        if return_sampler:
+            return sampler
         if return_samples:
             return samples
         return np.percentile(samples, [16, 50, 84], axis=0)
@@ -167,7 +169,7 @@ class firstmomentcube(imagecube):
             return -np.inf
         if not 0.0 < vlsr < 1e4:
             return -np.inf
-        if not -1 <= tilt <= 1:
+        if not -0.3 <= tilt <= 0.3:
             return -np.inf
 
         # Model specific values.
@@ -213,7 +215,10 @@ class firstmomentcube(imagecube):
                                       params=params, r_min=r_min, r_max=r_max,
                                       nearest=nearest)
         if beam:
-            return self._convolve_image(vkep / 1e3, self._beamkernel())
+            mask = np.isfinite(vkep)
+            vkep = self._convolve_image(vkep / 1e3, self._beamkernel())
+            vkep = np.where(mask, vkep, np.nan)
+            return vkep
         return vkep / 1e3
 
     def _estimate_PA(self, clip=5):

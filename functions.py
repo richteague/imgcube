@@ -75,7 +75,7 @@ def plot_walkers(samples, nburnin=None, labels=None):
     for s, sample in enumerate(samples):
         fig, ax = plt.subplots()
         for walker in sample.T:
-            ax.plot(walker, alpha=0.1)
+            ax.plot(walker, alpha=0.1, color='k')
         ax.set_xlabel('Steps')
         if labels is not None:
             ax.set_ylabel(labels[s])
