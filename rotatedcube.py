@@ -2,19 +2,14 @@
 Class for rotated cubes (with their major axis aligned with the xaxis.).
 This has the functionaility to infer the emission surface following Pinte et
 al (2018) with improvements.
-
-TODO: Check how to recover the far side of the disk.
 """
 
-import emcee
-import celerite
+
+import functions
 import numpy as np
 from cube import imagecube
-import functions
 from detect_peaks import detect_peaks
 from scipy.interpolate import interp1d
-from scipy.stats import binned_statistic
-from scipy.optimize import curve_fit, minimize
 import scipy.constants as sc
 
 
@@ -31,6 +26,7 @@ class rotatedcube(imagecube):
             print("WARNING: Not using Kelvin.")
 
         # Get the deprojected pixel values assuming a thin disk.
+        self.PA = 270.
         self.x0, self.y0 = x0, y0
         if inc is None:
             raise ValueError("WARNING: No inclination specified.")
@@ -43,9 +39,11 @@ class rotatedcube(imagecube):
         if mstar is None:
             raise ValueError("WARNING: No stellar mass specified.")
         self.mstar = mstar
-        self.rdisk, self.tdisk = self.disk_coordinates(x0, y0, self.inc, 0.0)
+        self.rdisk, self.tdisk = self.disk_coords(self.x0, self.y0, self.inc)
 
         # Define the surface.
+        self.nearest = 'north'
+        self.tilt = 1.0
         self.rbins, self.rvals = self._radial_sampling()
         self.zvals = np.zeros(self.rvals.size)
 
@@ -61,39 +59,57 @@ class rotatedcube(imagecube):
         """
 
         # Populate variables.
+
+        try:
+            from eddy.eddy import ensemble
+        except:
+            raise ValueError("Cannot find the eddy package.")
+
         if method.lower() not in ['bin', 'gp']:
             raise ValueError("Method must be ['bin', 'GP']")
 
         # Deprojected pixel coordinates.
-        if include_height:
-            rvals, tvals = self.disk_coordinates_3D()
-        else:
-            rvals, tvals = self.disk_coordinates(self.x0, self.y0, self.inc)
+
+        rvals, tvals = self.disk_coords(self.x0, self.y0, self.inc,
+                                        z_type='func',
+                                        params=self.emission_surface,
+                                        nearest=self.nearest)
         rvals, tvals = rvals.flatten(), tvals.flatten()
         if rbins is None and rvals is None and self.verbose:
             print("WARNING: No radial sampling set, this will take a while.")
         rbins, rpnts = self._radial_sampling(rbins=rbins, rvals=rpnts)
+        if rpnts.size != vrot.size:
+            raise ValueError("Wrong number of rotation velocities (vrot).")
 
         # Flatten the data to [velocity, nxpix * nypix].
+
         dvals = self.data.copy().reshape(self.data.shape[0], -1)
         if dvals.shape != (self.velax.size, self.nxpix * self.nypix):
             raise ValueError("Wrong data shape.")
 
         # Deproject the spectra.
+
         deprojected = []
         for r in range(1, rbins.size):
 
             # Get spectra and deproject.
-            mask = self._get_mask(r_min=rbins[r-1], r_max=rbins[r],
-                                  PA_min=PA_min, PA_max=PA_max,
-                                  exclude_PA=exclude_PA).flatten()
-            spectra, angles = dvals[:, mask].T, tvals[mask]
-            spectra = self._deproject_spectra(spectra, angles, vrot[r-1])
+
+            mask = self.get_mask(r_min=rbins[r-1], r_max=rbins[r],
+                                 PA_min=PA_min, PA_max=PA_max,
+                                 exclude_PA=exclude_PA, x0=self.x0, y0=self.y0,
+                                 inc=self.inc, z_type='func',
+                                 params=self.emission_surface,
+                                 nearest=self.nearest).flatten()
+            spectra, theta = dvals[:, mask].T, tvals[mask]
+            annulus = ensemble(spectra=spectra, theta=theta, velax=self.velax,
+                               suppres_warnings=0 if self.verbose else 1)
 
             # Collapse to a single spectrum.
+
             if method == 'bin':
-                deprojected += [np.nanmean(spectra, axis=0)]
+                deprojected += [annulus.deprojected_spectrum(vrot)]
             else:
+                spectra = annulus.deprojecrted_spectra(vrot)
                 noise = np.nanstd(self.data[0]) * np.ones(spectra.shape)
                 velax = self.velax[None, :] * np.ones(spectra.shape)
                 x, y, _ = functions.Matern32_model(velax.flatten(),
@@ -104,45 +120,11 @@ class rotatedcube(imagecube):
                                 fill_value='extrapolate')(self.velax)]
         return np.squeeze(deprojected)
 
-    def _deprojected_width(self, vrot, spectra, angles, resample=True):
-        """Return the width of the deprojected line profile."""
-        x, y = self._deprojected_spectrum(spectra, angles, vrot, resample)
-        Tb = np.max(y)
-        dV = np.trapz(y, x) / Tb / np.sqrt(np.pi)
-        x0 = x[y.argmax()]
-        p0 = [Tb, dV, x0]
-        try:
-            return abs(curve_fit(functions.gaussian, x, y, p0=p0,
-                       maxfev=10000)[0][1])
-        except:
-            return 1e50
-
-    def deprojected_spectra(self, spectra, angles, vrot):
-        """Return (v, Tb) of the deprojected points."""
-        vpnts = self.velax[None, :] - vrot * np.cos(angles)[:, None]
-        points = zip(*sorted(zip(vpnts.flatten(), spectra.flatten())))
-        return np.squeeze(points)
-
-    def deprojected_spectrum(self, spectra, angles, vrot):
-        """Return (x, y) of deprojected spectra, binned to original axes.."""
-        vpnts, spnts = self.deprojected_spectra(spectra, angles, vrot)
-        vrange = (self.velax[0] - self.chan, self.velax[-1] + self.chan)
-        return binned_statistic(vpnts, spnts, statistic='mean',
-                                bins=self.velax.size, range=vrange)[0]
-
-    def _deprojected_spectrum(self, spectra, angles, vrot, resample=True):
-        """Collapsed deprojected spectrum."""
-        if resample:
-            return self.velax, self.deprojected_spectrum(spectra, angles, vrot)
-        return self.deprojected_spectra(spectra, angles, vrot)
-
     # == Rotation Profiles == #
 
-    def get_rotation_profile(self, include_height=True, rbins=None, rpnts=None,
-                             resample=True, PA_min=None, PA_max=None,
-                             exclude_PA=False, method='dV', nwalkers=32,
-                             nburnin=100, nsteps=100, plot_walkers=False,
-                             plot_corner=False, verbose=False):
+    def get_rotation_profile(self, rbins=None, rpnts=None, resample=True,
+                             PA_min=None, PA_max=None, exclude_PA=False,
+                             method='dV', **kwargs):
         """
         Return the rotation profile by deprojecting the spectra. Two methods
         are available: 'dV' and 'GP'.
@@ -188,7 +170,12 @@ class rotatedcube(imagecube):
                         the posterior distribution for the GP model.
         """
 
-        # Check that the method is working.
+        # Populate variables.
+
+        try:
+            from eddy.eddy import ensemble
+        except:
+            raise ValueError("Cannot find the eddy package.")
         if method.lower() not in ['dv', 'gp']:
             raise ValueError("Must specify method: 'dV' or 'GP'.")
         if method.lower() == 'gp' and resample:
@@ -196,45 +183,53 @@ class rotatedcube(imagecube):
                 print("WARNING: Resampling with GP method not advised.")
 
         # Deprojected pixel coordinates.
-        if include_height:
-            rvals, tvals = self.disk_coordinates_3D()
-        else:
-            rvals, tvals = self.disk_coordinates(self.x0, self.y0, self.inc)
+
+        rvals, tvals = self.disk_coords(self.x0, self.y0, self.inc,
+                                        z_type='func',
+                                        params=self.emission_surface,
+                                        nearest=self.nearest)
         rvals, tvals = rvals.flatten(), tvals.flatten()
         if rbins is None and rvals is None and self.verbose:
             print("WARNING: No radial sampling set, this will take a while.")
         rbins, rpnts = self._radial_sampling(rbins=rbins, rvals=rpnts)
 
         # Flatten the data to [velocity, nxpix * nypix].
+
         dvals = self.data.copy().reshape(self.data.shape[0], -1)
         if dvals.shape != (self.velax.size, self.nxpix * self.nypix):
             raise ValueError("Wrong data shape.")
 
         # Cycle through each annulus and apply the method.
+
         v_rot = []
         for r in range(1, rbins.size):
 
-            if verbose:
+            if self.verbose:
                 print("Running %d / %d..." % (r, rbins.size-1))
 
-            mask = self._get_mask(r_min=rbins[r-1], r_max=rbins[r],
-                                  PA_min=PA_min, PA_max=PA_max,
-                                  exclude_PA=exclude_PA,
-                                  x0=self.x0, y0=self.y0,
-                                  inc=self.inc).flatten()
-            spectra, angles = dvals[:, mask].T, tvals[mask]
+            # Get the annulus of points.
 
+            mask = self.get_mask(r_min=rbins[r-1], r_max=rbins[r],
+                                 PA_min=PA_min, PA_max=PA_max,
+                                 exclude_PA=exclude_PA, x0=self.x0, y0=self.y0,
+                                 inc=self.inc, z_type='func',
+                                 params=self.emission_surface,
+                                 nearest=self.nearest).flatten()
+            spectra, theta = dvals[:, mask].T, tvals[mask]
+            annulus = ensemble(spectra=spectra, theta=theta, velax=self.velax,
+                               suppress_warnings=0 if self.verbose else 1)
+
+            # Infer the rotation velocity.
+
+            v_kep = self._projected_vkep(rpnts[r-1:r+1].mean())
             if method.lower() == 'dv':
-                v_rot += [self._get_vrot_from_width(spectra, angles, resample)]
+                v_rot += [annulus.get_vrot_dV()]
             else:
                 try:
-                    vkep = self._projected_vkep(rbins[r-1:r+1].mean())
-                    v_rot += [self._get_vrot_from_GP(spectra, angles, resample,
-                                                     nwalkers, nburnin, nsteps,
-                                                     plot_walkers, plot_corner,
-                                                     vkep)]
+                    v_rot += [annulus.get_vrot_GP(vref=v_kep, **kwargs)]
                 except:
                     v_rot += [np.zeros((3, 4))]
+
         return rpnts, np.squeeze(v_rot)
 
     def _projected_vkep(self, radius, theta=None):
@@ -247,113 +242,6 @@ class rotatedcube(imagecube):
         vkep = np.sqrt(vkep / radius / self.dist / sc.au)
         vkep *= 1.0 if theta is None else np.cos(theta)
         return vkep * np.sin(np.radians(self.inc))
-
-    def _get_vrot_from_width(self, spectra, angles, resample=True):
-        """Calculate rotation velocity by minimizing the linewidth."""
-        vrot, vlsr = self._estimate_vrot(spectra, angles)
-        args = (spectra, angles, resample)
-        res = minimize(self._deprojected_width, vrot, args=args,
-                       method='L-BFGS-B')
-        return abs(res.x[0])
-
-    def _estimate_vrot(self, spectra, angles):
-        """Estimate the rotation velocity from fitting a SHO to peaks."""
-        vpeaks = np.take(self.velax, np.argmax(spectra, axis=1))
-        p0 = [0.5 * (np.max(vpeaks) - np.min(vpeaks)), np.mean(vpeaks)]
-        try:
-            popt, _ = curve_fit(functions.offsetSHO, angles, vpeaks,
-                                p0=p0, maxfev=10000)
-        except:
-            popt = p0
-        return np.squeeze(popt)
-
-    def _get_p0(self, spectra, angles, nwalkers, scatter=3e-2):
-        """
-        Return starting positions for the GP approach. As a guide for the
-        Gaussian Process model, rho ~ 3*dV, sigma ~ RMS.
-        """
-
-        # Guess the rotation velocity and systemic velocity.
-        vrot, vlsr = self._estimate_vrot(spectra, angles)
-
-        # Check that the rotation velocity is positive.
-        if vrot < 0.0 and self.verbose:
-            print("WARNING: Negative rotation velocity found.")
-            print("\t Check blue shifted side aligned with East.")
-
-        # Derive properties of the line.
-        x, y = self._deprojected_spectrum(spectra, angles, vrot)
-        dV = np.trapz(y, x) / y.max() / np.sqrt(2. * np.pi)
-        rms = np.nanvar(self.data[0])
-
-        # Include some scatter and return.
-        p0 = np.array([vrot, rms, np.log(rms), np.log(dV)])
-        return functions.random_p0(p0, scatter, nwalkers), vrot
-
-    def _get_vrot_from_GP(self, spectra, angles, resample=False, nwalkers=32,
-                          nburnin=100, nsteps=50, plot_walkers=False,
-                          plot_corner=False, vkep=None, threads=1.0):
-        """Calculate rotation velocity by modelling lines as GPs."""
-        p0, estimated_vrot = self._get_p0(spectra, angles, nwalkers)
-        vkep = estimated_vrot if vkep is None else vkep
-
-        if threads <= 1.0:
-            args = (spectra, angles, resample, vkep)
-            sampler = emcee.EnsembleSampler(nwalkers, 4,
-                                            self._log_probability_M32,
-                                            args=args)
-        else:
-            raise NotImplementedError("This just slows it all down...")
-
-        sampler.run_mcmc(p0, nburnin + nsteps)
-        samples = sampler.chain[:, -nsteps:]
-        samples = samples.reshape(-1, samples.shape[-1])
-
-        # Diagnosis plots.
-        labels = [r'${\rm v_{rot}}$', r'${\rm \sigma_{rms}}$',
-                  r'${\rm ln(\sigma)}$', r'${\rm ln(\rho)}$']
-        if plot_walkers:
-            functions.plot_walkers(sampler.chain.T, nburnin, labels)
-        if plot_corner:
-            functions.plot_corner(samples, labels)
-
-        # Return values.
-        return np.percentile(samples, [16, 50, 84], axis=0)
-
-    def _log_probability_M32(self, theta, spectra, angles, resample, vkep):
-        """Log-probability function for the Gaussian Processes approach."""
-
-        # Unpack the free parameters.
-        vrot, noise, lnsigma, lnrho = theta
-
-        # Uninformative priorsbut don't stray too far from the expected value.
-        if abs(vrot - vkep) / vkep > 0.3:
-            return -np.inf
-        if noise <= 0.0:
-            return -np.inf
-        if not -5.0 < lnsigma < 10.:
-            return -np.inf
-        if not 0.0 <= lnrho <= 10.:
-            return -np.inf
-
-        # Generate the Gaussian Process model and return log-likelihood.
-        x, y = self._deprojected_spectrum(spectra, angles, vrot, resample)
-
-        # Remove pesky points.
-        mask = np.percentile(self.velax, [30, 70])
-        mask = np.logical_and(x >= mask[0], x <= mask[-1])
-        x, y = x[mask], y[mask]
-
-        k_noise = celerite.terms.JitterTerm(log_sigma=np.log(noise))
-        k_line = celerite.terms.Matern32Term(log_sigma=lnsigma, log_rho=lnrho)
-        kernel = k_noise + k_line
-        gp = celerite.GP(kernel, mean=np.nanmean(y), fit_mean=True)
-        try:
-            gp.compute(x)
-        except:
-            return -np.inf
-        ll = gp.log_likelihood(y, quiet=True)
-        return ll if np.isfinite(ll) else -np.inf
 
     def fit_rotation_curve(self, rvals, vrot, dvrot=None, beam_clip=2.0,
                            fit_mstar=True, verbose=True, save=True):
@@ -399,35 +287,10 @@ class rotatedcube(imagecube):
         vkep = sc.G * self.mstar * self.msun / rvals / sc.au / self.dist
         return np.sqrt(vkep * np.sin(np.radians(inc)))
 
-    # == Spatial Deprojections == #
-
-    def disk_coordinates_3D(self, niter=5):
-        """
-        Deprojected pixel coordinates in [arcsec, radians] taking account of
-        the raised emission surface. Note that PA is relative to the eastern
-        major axis.
-        """
-        rpix = None
-        for _ in range(niter):
-            rpix, tpix = self._disk_coordinates_3D_iteration(rpix)
-        return rpix, tpix
-
-    def _disk_coordinates_3D_iteration(self, rpix=None):
-        """Return radius and position angle of each pixel."""
-        if rpix is None:
-            rpix = np.hypot(self.xaxis[None, :], self.yaxis[:, None])
-        inc = np.radians(self.inc)
-        zpix = self.emission_surface(rpix)
-        zpix *= 1.0 if self.tilt == 'north' else -1.0
-        ypix = np.ones(rpix.shape) * self.yaxis[:, None] / np.cos(inc)
-        xpix = np.ones(rpix.shape) * self.xaxis[None, :]
-        ypix -= zpix * np.tan(inc)
-        return np.hypot(ypix, xpix), np.arctan2(ypix, xpix)
-
     # == Emission surface. == #
 
     def emission_surface(self, radii):
-        """Linearlly interpolate the emission surface ["]."""
+        """Returns the height at the given radius for the stored height."""
         if np.isnan(self.zvals[0]):
             idx = np.isfinite(self.zvals).argmax()
             rim = interp1d([0.0, self.rvals[idx]], [0.0, self.zvals[idx]])
@@ -438,7 +301,7 @@ class rotatedcube(imagecube):
         return interp1d(self.rvals, self.zvals, bounds_error=False,
                         fill_value='extrapolate')(radii)
 
-    def set_emission_surface_analytical(self, func='conical', theta=None):
+    def set_emission_surface_analytical(self, func='flared', theta=[0.3, 1.2]):
         """
         Define the emission surface as an analytical function.
 
@@ -449,14 +312,14 @@ class rotatedcube(imagecube):
 
         - Possible Functions -
 
-        powerlaw:   Power-law function: z = z_0 * (r / 1.0 arcsec)^z_q where
+        flared:     Power-law function: z = z_0 * (r / 1.0 arcsec)^z_q where
                     theta = [z_0, z_q].
         conical:    Flat, constant angle surface: z = r * tan(psi) + z_0, where
                     theta = [psi, z_0] where psi in [degrees].
 
         """
         theta = np.atleast_1d(theta)
-        if func.lower() == 'powerlaw':
+        if func.lower() == 'flared':
             if len(theta) != 2:
                 raise ValueError("theta = [z_0, z_q].")
             self.zvals = theta[0] * np.power(self.rvals, theta[1])
@@ -494,51 +357,54 @@ class rotatedcube(imagecube):
         """
 
         # Define the radial gridding.
-        if rvals is None and rbins is None:
-            rvals, rbins = self.rvals, self.rbins
-        elif rvals is None:
-            rvals = np.average([rbins[1:], rbins[:-1]], axis=0)
-        elif rbins is None:
-            dr = 0.5 * np.diff(rvals).mean()
-            rbins = np.linspace(rvals[0]-dr, rvals[-1]+dr, rvals.size+1)
+        if rbins is None and rvals is None and self.verbose:
+            print("WARNING: No radial sampling set, this will take a while.")
+        rbins, rvals = self._radial_sampling(rbins=rbins, rvals=rvals)
         clipped_data = self.data
 
         # Apply masking to the data.
         if nsigma > 0.0:
             r, I, dI = self.radial_profile(collapse='sum')
+            rsky = self.disk_coords(self.x0, self.y0, self.inc)[0]
+
+            # Estimate the RMS.
             mask = np.logical_and(I != 0.0, dI != 0.0)
-            mask = nsigma * np.nanmean(dI[mask][-10])
-            rsky = self.disk_coordinates(self.x0, self.y0, self.inc, 0.0)[0]
+            mask = nsigma * np.nanmean(dI[mask][-10:])
+
+            # Mask all points below nsigma * RMS.
             mask = interp1d(r, I, fill_value='extrapolate')(rsky) >= mask
             mask = np.ones(clipped_data.shape) * mask[None, :, :]
             clipped_data = np.where(mask, clipped_data, 0.0)
 
-            # Use the radial brightness temperature profile as another mask.
+            # Mask all points below <Tb> - nsigma * d<Tb>.
             r, Tb, dTb = self.radial_profile(collapse='max', beam_factor=False)
             clip = interp1d(r, Tb - nsigma * Tb, fill_value='extrapolate')
-            r = self.disk_coordinates(self.x0, self.y0, self.inc, 0.0)[0]
-            clipped_data = np.where(self.data >= clip(r), clipped_data, 0.0)
+            clipped_data = np.where(self.data >= clip(rsky), clipped_data, 0.0)
 
         # Calculate the emission surface and bin appropriately.
         r, z, Tb = self._get_emission_surface(clipped_data, self.x0, self.y0,
                                               self.inc, r_max=1.41*rbins[-1])
+        idxs = np.argsort(r)
+        r, z, Tb = r[idxs], z[idxs], Tb[idxs]
+
         if method.lower() not in ['gp', 'binned', 'raw']:
             raise ValueError("method must be 'gp', 'binned' or None.")
+
         if method.lower() == 'gp':
-            r, z = functions.sort_arrays(r, z)
             window = self.bmaj / np.nanmean(np.diff(r))
             dz = functions.running_stdev(z, window=window)
             r, z, dz = functions.Matern32_model(r, z, dz, jitter=True,
                                                 return_var=True)
             z = interp1d(r, z, fill_value=np.nan, bounds_error=False)(rvals)
             dz = interp1d(r, dz, fill_value=np.nan, bounds_error=False)(rvals)
+
         elif method.lower() == 'binned':
             ridxs = np.digitize(r, rbins)
             dz = [np.nanstd(z[ridxs == rr]) for rr in range(1, rbins.size)]
             z = [np.nanmean(z[ridxs == rr]) for rr in range(1, rbins.size)]
             z, dz = np.squeeze(z), np.squeeze(dz)
+
         else:
-            r, z = functions.sort_arrays(r, z)
             dz = functions.running_stdev(z, window=window)
         return rvals, z, dz
 
@@ -606,14 +472,9 @@ class rotatedcube(imagecube):
                 # Measure the tilt of the emission surface (north / south).
                 tilt += [np.sign(yc - y0)]
 
-        # Use the sign to tell if the surface is 'north' or 'south' tilted.
-        self.tilt = 'north' if np.sign(np.nanmean(tilt)) > 0 else 'south'
+        # Use the sign to tell if the closest surface is 'north' or 'south'.
+        self.nearest = 'north' if np.sign(np.nanmean(tilt)) > 0 else 'south'
+        self.tilt = 1.0 if self.nearest == 'north' else -1.0
         if self.verbose:
             print("Found offsets in the %s direction." % self.tilt)
         return np.squeeze(coords).T
-
-
-def keplerian_rotation(rvals, theta, *args):
-    """Call a specific function."""
-    instance, name = args
-    return getattr(instance, name)(rvals, theta)
