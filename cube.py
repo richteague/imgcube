@@ -492,8 +492,6 @@ class imagecube:
         if iter_params.shape[0] > 5 and self.verbose:
             print("WARNING: Large number of intermediate masks. May freeze.")
 
-        print iter_params
-
         # Allow for multiple hyperfine components.
         vlsr = np.atleast_1d(vlsr)
 
@@ -528,11 +526,13 @@ class imagecube:
             hdu.writeto(fname.replace('.fits', '') + '.fits',
                         clobber=True, output_verify='fix')
 
-    def _dV_profile(self, x0, y0, inc, PA, dV, dVq=0.0):
+    def _dV_profile(self, x0, y0, inc, PA, z_type='thin', params=None,
+                    nearest='north', dV=450., dVq=0.0):
         """Return a radial linewidth profile."""
         if dVq == 0.0:
             return dV
-        rdisk = self.disk_coordinates(x0, y0, inc, PA)[0]
+        rdisk = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA, z_type=z_type,
+                                 nearest=nearest, params=params)[0]
         return dV * np.power(rdisk, dVq)
 
     def _keplerian_mask(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z_type='thin',
@@ -543,7 +543,8 @@ class imagecube:
         # Start the mask.
         params = np.atleast_1d(params)
         mask = np.ones(self.data.shape) * self.velax[:, None, None]
-        dV = self._dV_profile(x0, y0, inc, PA, dV, dVq)
+        dV = self._dV_profile(x0=x0, y0=y0, inc=inc, PA=PA, z_type=z_type,
+                              params=params, nearest=nearest, dV=dV, dVq=dVq)
 
         # Rotation of the front side of the disk.
         v1 = self.keplerian_profile(x0=x0, y0=y0, inc=inc, PA=PA,
