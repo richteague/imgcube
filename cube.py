@@ -1,10 +1,5 @@
 """
 Default FITS cube class. Reads in the data and generate the axes.
-
-Things still to do:
-
-    1 - slight difference in coordinates between CASA and here.
-
 """
 
 import os

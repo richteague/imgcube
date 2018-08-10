@@ -124,7 +124,7 @@ class rotatedcube(imagecube):
 
     def get_rotation_profile(self, rbins=None, rpnts=None, resample=True,
                              PA_min=None, PA_max=None, exclude_PA=False,
-                             method='dV', **kwargs):
+                             method='dV', beam_spacing=True, **kwargs):
         """
         Return the rotation profile by deprojecting the spectra. Two methods
         are available: 'dV' and 'GP'.
@@ -143,8 +143,6 @@ class rotatedcube(imagecube):
 
         - Inputs -
 
-        include_height: Deproject the pixels taking into account the emission
-                        surface.
         rbins / rpnts:  Provide the radial grid in [arcsec] which you want to
                         bin the spectra into. By default this will span the
                         entire radius range.
@@ -155,12 +153,8 @@ class rotatedcube(imagecube):
         PA_max:         Maximum (relative) position angle to include.
         exclude_PA:     Exclude, rather than include PA_min < PA < PA_mask.
         method:         Which method to use, either 'dV' or 'GP'.
-        nwalkers:       Number of walkers to use in the MCMC fitting.
-        nburnin:        Number of steps to use for burning in the walkers.
-        nsteps:         Number of steps to use to sample the posterior.
-        plot_walkers:   Plot the samples to check for convergence.
-        plot_corner:    Plot the corner plot to check for covariance.
-        verbose:        Print out how far you are through the fitting.
+        beam_spacing:   Randomly draw spectra roughly a beamsize apart from the
+                        annulus.
 
         - Output -
 
@@ -216,12 +210,32 @@ class rotatedcube(imagecube):
                                  params=self.emission_surface,
                                  nearest=self.nearest).flatten()
             spectra, theta = dvals[:, mask].T, tvals[mask]
+
+            # Extract spectra roughly a beam apart. Include a slight
+            # randomization in where it starts. TODO: Can do better randomize.
+
+            if beam_spacing:
+                idxs = np.argsort(theta)
+                spectra, theta = spectra[idxs], theta[idxs]
+                sampling = np.mean(np.diff(theta))
+                sampling = np.floor(self.bmaj / rpnts[r-1] / sampling)
+                sampling = int(sampling)
+                if sampling > 1:
+                    if theta.size % sampling:
+                        start = np.random.randint(0, theta.size % sampling)
+                    else:
+                        start = 0
+                    spectra = spectra[start::sampling]
+                    theta = theta[start::sampling]
+
+            # Create an ensemble instance from eddy.
+
             annulus = ensemble(spectra=spectra, theta=theta, velax=self.velax,
                                suppress_warnings=0 if self.verbose else 1)
 
             # Infer the rotation velocity.
 
-            v_kep = self._projected_vkep(rpnts[r-1:r+1].mean())
+            v_kep = self._projected_vkep(rpnts[r-1])
             if method.lower() == 'dv':
                 v_rot += [annulus.get_vrot_dV()]
             else:
