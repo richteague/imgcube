@@ -184,7 +184,7 @@ class rotatedcube(imagecube):
 
         # Deprojected pixel coordinates.
 
-        rvals, tvals = self.disk_coords(self.x0, self.y0, self.inc,
+        rvals, tvals = self.disk_coords(self.x0, self.y0, self.inc, 90.,
                                         z_type='func',
                                         params=self.emission_surface,
                                         nearest=self.nearest)
@@ -301,14 +301,14 @@ class rotatedcube(imagecube):
         return interp1d(self.rvals, self.zvals, bounds_error=False,
                         fill_value='extrapolate')(radii)
 
-    def set_emission_surface_analytical(self, func='flared', theta=[0.3, 1.2]):
+    def set_emission_surface_analytical(self, z_type='conical', params=[13.]):
         """
         Define the emission surface as an analytical function.
 
         - Input Variables -
 
-        func:       Analytical function to use for the surface.
-        theta:      Variables for the given function.
+        z_typr:     Analytical function to use for the surface.
+        params:     Variables for the given function.
 
         - Possible Functions -
 
@@ -318,16 +318,16 @@ class rotatedcube(imagecube):
                     theta = [psi, z_0] where psi in [degrees].
 
         """
-        theta = np.atleast_1d(theta)
-        if func.lower() == 'flared':
-            if len(theta) != 2:
+        params = np.atleast_1d(params)
+        if z_type.lower() == 'flared':
+            if len(params) != 2:
                 raise ValueError("theta = [z_0, z_q].")
-            self.zvals = theta[0] * np.power(self.rvals, theta[1])
-        elif func.lower() == 'conical':
-            if not 1 <= len(theta) < 3:
+            self.zvals = params[0] * np.power(self.rvals, params[1])
+        elif z_type.lower() == 'conical':
+            if not 1 <= len(params) < 3:
                 raise ValueError("theta = [psi, (z_0)].")
-            z0 = theta[1] if len(theta) == 2 else 0.0
-            self.zvals = self.rvals * np.tan(np.radians(theta[0])) + z0
+            z0 = params[1] if len(params) == 2 else 0.0
+            self.zvals = self.rvals * np.tan(np.radians(params[0])) + z0
         else:
             raise ValueError("func must be 'powerlaw' or 'conical'.")
         return
@@ -476,5 +476,5 @@ class rotatedcube(imagecube):
         self.nearest = 'north' if np.sign(np.nanmean(tilt)) > 0 else 'south'
         self.tilt = 1.0 if self.nearest == 'north' else -1.0
         if self.verbose:
-            print("Found offsets in the %s direction." % self.tilt)
+            print("Found the %s side is the closest." % self.nearest)
         return np.squeeze(coords).T

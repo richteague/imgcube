@@ -168,7 +168,11 @@ class imagecube:
                 return c1, c2, func(c1)
         return c1, c2
 
-        # Calculate the height.
+    def _estimate_PA(self, clip=95):
+        """Estimate the PA of the disk."""
+        mask = self.data >= np.nanpercentile(self.data, [clip])
+        angles = np.where(mask, self.disk_coords()[1], np.nan)
+        return np.nanmean(np.degrees(angles))
 
     def _rotate_coords(self, x, y, PA):
         """Rotate (x, y) by PA [deg]."""

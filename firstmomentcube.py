@@ -39,17 +39,60 @@ class firstmomentcube(imagecube):
                       plot_walkers=True, plot_corner=True, plot_bestfit=True,
                       return_samples=False, return_sampler=False):
         """
-        Fit a Keplerian rotation profile to a first / ninth moment map.
+        Fit a Keplerian rotation profile to a first or ninth moment map. Using
+        a ninth moment map is better as it will be less contaminated from the
+        far side of the disk. However, for low inclination disks observed with
+        a low spectral resolution the first moment map be the only option.
+
+        You can also consider a range of emission surface geometries which will
+        be necessary to explain the emission morphology for molecular lines
+        which arise from the upper layers in the disk such as 12CO. Available
+        functions are: 'thin', a geometrically thin disk; 'conical', a double
+        cone model as in Rosenfeld et al. (2013) defined by an opening angle
+        between the emission surface and the midplane, and 'flared', where the
+        surface is a power-law function normalised at r = 1". If a 3D geometry
+        is chosen then you can set which side of the disk is nearest to the
+        observer, either 'north' or 'south'. If this is not given then it will
+        be left as a free parameter 'tilt' where 'tilt' > 0 if the northern
+        side is nearest and <= 0 for the southern side.
 
         - Input -
 
-        p0
-        fit_mstar
-        beam
-        r_min
-        r_max
-        z_type
-        nearest
+        p0              : Starting positions for the MCMC. If none is specified
+                          then they are populated with reasonable guesses.
+        fit_mstar       : To break the Mstar*sin(i) degeneracy, only one of the
+                          two properties can be fit. If `fit_mstar = True` then
+                          the inclination is held fixed, otherwise the stellar
+                          mass is.
+        beam            : Include a convolution of the synthesied beam. This is
+                          not strictly correct but provides a better estimate
+                          than none at all.
+        r_min           : [optional] Minimum radius (in disk coordaintes) to
+                          fit (arcsec).
+        r_max           : Maximum radius (in disk coordaintes) to fit (arcsec).
+                          Due to issues with convolution and NaNs, this should
+                          be less than the noisy edges of the data.
+        z_type          : Type of 3D geometry to assume.
+        nearest         : [optional] Which side of the disk is closest to the
+                          observer if known.
+        nwalkers        : Number of walkers to use, by default is 2 * len(p0).
+        nburnin         : Number of steps taken to burn in the walkers.
+        nsteps          : Number of steps used to sample the posterior.
+        scatter         : Scatter used to disperse the p0 values.
+        error           : Error on the data in (km/s).
+        plot_walkers    : Plot the sampling for each parameter.
+        plot_corner     : Plot the covariances of the posteriors.
+        plot_bestfit    : Plot the best-fit model.
+        return_samples  : Return all the samples from the MCMC chains.
+        return_sampler  : Return the emcee sampler.
+
+        - Returns -
+
+        percentiles     : [default] The [16, 50, 84]th percentiles of the
+                          posterior distributions.
+        samples         : [return_samples = True] All samples of the posterior
+                           distribution. Doesn't include burnin samples.
+        sampler         : [return_sampler = True] The emcee sampler.
         """
 
         # Load up emcee.
@@ -220,12 +263,6 @@ class firstmomentcube(imagecube):
             vkep = np.where(mask, vkep, np.nan)
             return vkep
         return vkep / 1e3
-
-    def _estimate_PA(self, clip=95):
-        """Estimate the PA of the disk."""
-        mask = self.data >= np.nanpercentile(self.data, [clip])
-        angles = np.where(mask, self.disk_coords()[1], np.nan)
-        return np.nanmean(np.degrees(angles))
 
     def _random_p0(self, p0, scatter, nwalkers):
         """Get the starting positions."""
