@@ -89,7 +89,7 @@ class imagecube:
 
     # == Coordinate Deprojection == #
 
-    def disk_coords(self, x0=0.0, y0=0.0, inc=0.0, PA=45.0, frame='polar',
+    def disk_coords(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, frame='polar',
                     z_type='thin', params=None, nearest='north', get_z=False):
         """
         Return the disk coordinates given the specified deprojection values.
@@ -98,7 +98,7 @@ class imagecube:
 
         x0, y0  :   Disk offset in [arcsec].
         inc     :   Inclination of disk in [degrees].
-        PA      :   Position angle of the disk in [degrees].
+        PA      :   Position angle of the disk major axis E of N in [degrees].
         frame   :   Coordinates returned, either 'cartesian' or 'polar'.
         z_type  :   Type of surface: 'thin', 'conical', 'flared', 'func'.
         params  :   Parameters need for the specified surface. If a 'thin' disk
@@ -132,8 +132,8 @@ class imagecube:
             raise ValueError("Either 'north' or 'south' must be closer.")
         tilt = 1.0 if nearest == 'north' else -1.0
 
-        # Rescale for the PA definition (major axis east of north).
-        PA -= 45.
+        # # Rescale for the PA definition (major axis east of north).
+        # PA -= 45.
 
         # Geometrically thin disk.
         if z_type == 'thin':
@@ -182,17 +182,17 @@ class imagecube:
 
     def _get_cart_sky_coords(self, x0, y0):
         """Return caresian sky coordinates in [arcsec, arcsec]."""
-        return np.meshgrid(self.xaxis[::-1] + x0, self.yaxis + y0)
+        return np.meshgrid(self.xaxis - x0, self.yaxis - y0)
 
     def _get_polar_sky_coords(self, x0, y0):
         """Return polar sky coordinates in [arcsec, radians]."""
         x_sky, y_sky = self._get_cart_sky_coords(x0, y0)
-        return np.hypot(y_sky, x_sky), np.arctan2(y_sky, x_sky)
+        return np.hypot(y_sky, x_sky), np.arctan2(x_sky, y_sky)
 
     def _get_midplane_cart_coords(self, x0, y0, inc, PA):
         """Return cartesian coordaintes of midplane in [arcsec, arcsec]."""
         x_sky, y_sky = self._get_cart_sky_coords(x0, y0)
-        x_rot, y_rot = self._rotate_coords(x_sky, y_sky, PA)
+        x_rot, y_rot = self._rotate_coords(y_sky, x_sky, -PA)
         return self._deproject_coords(x_rot, y_rot, inc)
 
     def _get_midplane_polar_coords(self, x0, y0, inc, PA):

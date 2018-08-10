@@ -10,7 +10,7 @@ from cube import imagecube
 class firstmomentcube(imagecube):
 
     def __init__(self, path, mstar=None, inc=None, dist=None, vlsr=None,
-                 clip=None, suppress_warnings=False):
+                 clip=None, suppress_warnings=True):
         """Read in the first moment map."""
         imagecube.__init__(self, path, absolute=False, kelvin=False, clip=clip,
                            suppress_warnings=suppress_warnings)
@@ -153,7 +153,7 @@ class firstmomentcube(imagecube):
         if z_type != 'thin' and nearest is None:
             tilt = theta[-1]
         else:
-            tilt = 1.0 if nearest == 'north' else -1.0
+            tilt = .1 if nearest == 'north' else -.1
 
         # Check their priors.
 
@@ -221,11 +221,11 @@ class firstmomentcube(imagecube):
             return vkep
         return vkep / 1e3
 
-    def _estimate_PA(self, clip=5):
+    def _estimate_PA(self, clip=95):
         """Estimate the PA of the disk."""
-        t = np.where(self.data <= np.nanpercentile(self.data, [clip]),
-                     self.disk_coords(0.0, 0.0, self.inc, 0.0)[1], np.nan)
-        return np.nanmean((np.degrees(t) + 360.) % 360.) + 45.
+        mask = self.data >= np.nanpercentile(self.data, [clip])
+        angles = np.where(mask, self.disk_coords()[1], np.nan)
+        return np.nanmean(np.degrees(angles))
 
     def _random_p0(self, p0, scatter, nwalkers):
         """Get the starting positions."""
