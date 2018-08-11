@@ -227,7 +227,7 @@ class rotatedcube(imagecube):
                 # interpret as the number of beams to resample by.
 
                 sampling = float(beam_spacing) * self.bmaj
-                sampling /= rpnts[r-1] * np.mean(np.diff(theta))
+                sampling /= rpnts[r-1] * np.median(np.diff(theta))
                 sampling = np.floor(sampling).astype('int')
 
                 # If sampling rate is above 1, start at a random location in
@@ -239,7 +239,7 @@ class rotatedcube(imagecube):
                     spectra = np.vstack([spectra[start:], spectra[:start]])
                     theta, spectra = theta[::sampling], spectra[::sampling]
                 elif self.verbose:
-                    print("WARNING: Unable to resample the data.")
+                    print("WARNING: Unable to downsample the data.")
 
             # Create an ensemble instance from eddy if enough spectra (> 2).
 

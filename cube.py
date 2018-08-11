@@ -18,16 +18,16 @@ class imagecube:
     fwhm = 2. * np.sqrt(2 * np.log(2))
 
     def __init__(self, path, absolute=False, kelvin=True, clip=None,
-                 suppress_warnings=True):
+                 verbose=None, suppress_warnings=True):
         """Load up an image cube."""
 
         # Suppres warnings.
         if suppress_warnings:
             import warnings
             warnings.filterwarnings("ignore")
-            self.verbose = False
+            self.verbose = False if verbose is None else verbose
         else:
-            self.verbose = True
+            self.verbose = True if verbose is None else verbose
 
         # Read in the data and header.
         self.path = os.path.expanduser(path)
