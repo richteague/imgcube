@@ -8,9 +8,9 @@ al (2018) with improvements.
 import functions
 import numpy as np
 from cube import imagecube
+import scipy.constants as sc
 from detect_peaks import detect_peaks
 from scipy.interpolate import interp1d
-import scipy.constants as sc
 
 
 class rotatedcube(imagecube):
@@ -239,7 +239,16 @@ class rotatedcube(imagecube):
                 elif self.verbose:
                     print("WARNING: Unable to resample the data.")
 
-            # Create an ensemble instance from eddy.
+            # Create an ensemble instance from eddy if enough spectra (> 2).
+
+            if len(theta) < 2:
+                if self.verbose:
+                    print("WARNING: Not enough spectra. Skipping annulus.")
+                if method.lower() == 'dv':
+                    v_rot += [0.0]
+                else:
+                    v_rot += [np.zeros((3, 4))]
+                continue
 
             annulus = ensemble(spectra=spectra, theta=theta, velax=self.velax,
                                suppress_warnings=0 if self.verbose else 1)
@@ -248,7 +257,7 @@ class rotatedcube(imagecube):
 
             v_kep = self._projected_vkep(rpnts[r-1])
             if method.lower() == 'dv':
-                v_rot += [annulus.get_vrot_dV()]
+                v_rot += [annulus.get_vrot_dV(vref=v_kep)]
             else:
                 try:
                     v_rot += [annulus.get_vrot_GP(vref=v_kep, **kwargs)]
@@ -326,7 +335,8 @@ class rotatedcube(imagecube):
         return interp1d(self.rvals, self.zvals, bounds_error=False,
                         fill_value='extrapolate')(radii)
 
-    def set_emission_surface_analytical(self, z_type='conical', params=[13.]):
+    def set_emission_surface_analytical(self, z_type='flared',
+                                        params=[0.3, 1.2], nearest=None):
         """
         Define the emission surface as an analytical function.
 
@@ -343,6 +353,14 @@ class rotatedcube(imagecube):
                     theta = [psi, z_0] where psi in [degrees].
 
         """
+
+        if nearest is None:
+            raise ValueError("Must specifiy which side of the disk is closer.")
+        if nearest not in ['north', 'south']:
+            raise ValueError("Nearest must be 'north' or 'south'.")
+        self.nearest = nearest
+        self.tilt = 1.0 if nearest == 'north' else -1.0
+
         params = np.atleast_1d(params)
         if z_type.lower() == 'flared':
             if len(params) != 2:
@@ -383,7 +401,7 @@ class rotatedcube(imagecube):
 
         # Define the radial gridding.
         if rbins is None and rvals is None and self.verbose:
-            print("WARNING: No radial sampling set, this will take a while.")
+            print("WARNING: No radial sampling set, this may take a while.")
         rbins, rvals = self._radial_sampling(rbins=rbins, rvals=rvals)
         clipped_data = self.data
 
@@ -498,7 +516,7 @@ class rotatedcube(imagecube):
                 tilt += [np.sign(yc - y0)]
 
         # Use the sign to tell if the closest surface is 'north' or 'south'.
-        self.nearest = 'north' if np.sign(np.nanmean(tilt)) > 0 else 'south'
+        self.nearest = 'south' if np.sign(np.nanmean(tilt)) > 0 else 'north'
         self.tilt = 1.0 if self.nearest == 'north' else -1.0
         if self.verbose:
             print("Found the %s side is the closest." % self.nearest)
