@@ -206,7 +206,7 @@ class rotatedcube(imagecube):
             mask = self.get_mask(r_min=rbins[r-1], r_max=rbins[r],
                                  PA_min=PA_min, PA_max=PA_max,
                                  exclude_PA=exclude_PA, x0=self.x0, y0=self.y0,
-                                 inc=self.inc, z_type='func',
+                                 inc=self.inc, PA=90., z_type='func',
                                  params=self.emission_surface,
                                  nearest=self.nearest).flatten()
             spectra, theta = dvals[:, mask].T, tvals[mask]
