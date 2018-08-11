@@ -211,22 +211,33 @@ class rotatedcube(imagecube):
                                  nearest=self.nearest).flatten()
             spectra, theta = dvals[:, mask].T, tvals[mask]
 
-            # Extract spectra roughly a beam apart. Include a slight
-            # randomization in where it starts. TODO: Can do better randomize.
+            # Extract spectra roughly a beam apart in midplane coordinates.
+            # There is some randomization here so multiple runs are required.
 
             if beam_spacing:
+
+                # Sort the spectra into increasing PA.
+
                 idxs = np.argsort(theta)
                 spectra, theta = spectra[idxs], theta[idxs]
-                sampling = np.mean(np.diff(theta))
-                sampling = np.floor(self.bmaj / rpnts[r-1] / sampling)
-                sampling = int(sampling)
+
+                # Calculate the sampling rate. If beam_spacing is a float,
+                # interpret as the number of beams to resample by.
+
+                sampling = float(beam_spacing) * self.bmaj
+                sampling /= rpnts[r-1] * np.mean(np.diff(theta))
+                sampling = np.floor(sampling).astype('int')
+
+                # If sampling rate is above 1, start at a random location in
+                # the array and sample at the given rate.
+
                 if sampling > 1:
-                    if theta.size % sampling:
-                        start = np.random.randint(0, theta.size % sampling)
-                    else:
-                        start = 0
-                    spectra = spectra[start::sampling]
-                    theta = theta[start::sampling]
+                    start = np.random.randint(0, theta.size)
+                    theta = np.concatenate([theta[start:], theta[:start]])
+                    spectra = np.vstack([spectra[start:], spectra[:start]])
+                    theta, spectra = theta[::sampling], spectra[::sampling]
+                elif self.verbose:
+                    print("WARNING: Unable to resample the data.")
 
             # Create an ensemble instance from eddy.
 
