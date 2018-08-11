@@ -10,9 +10,10 @@ from cube import imagecube
 class firstmomentcube(imagecube):
 
     def __init__(self, path, mstar=None, inc=None, dist=None, vlsr=None,
-                 clip=None, suppress_warnings=True):
+                 clip=None, verbose=True, suppress_warnings=True):
         """Read in the first moment map."""
         imagecube.__init__(self, path, absolute=False, kelvin=False, clip=clip,
+                           verbose=verbose,
                            suppress_warnings=suppress_warnings)
         if mstar is None:
             raise ValueError("WARNING: Must specify mstar [Msun].")

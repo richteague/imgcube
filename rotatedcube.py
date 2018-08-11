@@ -16,12 +16,14 @@ from scipy.interpolate import interp1d
 class rotatedcube(imagecube):
 
     def __init__(self, path, inc=None, mstar=None, dist=None, x0=0.0, y0=0.0,
-                 clip=None, kelvin=True, suppress_warnings=False):
+                 clip=None, kelvin=True, verbose=True,
+                 suppress_warnings=False):
         """Read in the rotated image cube."""
 
         # Initilize the class.
         imagecube.__init__(self, path, absolute=False, kelvin=kelvin,
-                           clip=clip, suppress_warnings=suppress_warnings)
+                           clip=clip, verbose=verbose,
+                           suppress_warnings=suppress_warnings)
         if not kelvin and self.verbose:
             print("WARNING: Not using Kelvin.")
 
