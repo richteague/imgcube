@@ -85,18 +85,19 @@ class imagecube:
     # == Coordinate Deprojection == #
 
     def disk_coords(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, frame='polar',
-                    z_type='thin', params=None, nearest='north', get_z=False):
+                    z_type='thin', params=None, nearest='north', get_z=False,
+                    flat=False):
         """
         Return the disk coordinates given the specified deprojection values.
 
         - Input -
 
-        x0, y0  :   Disk offset in [arcsec].
-        inc     :   Inclination of disk in [degrees].
-        PA      :   Position angle of the disk major axis E of N in [degrees].
-        frame   :   Coordinates returned, either 'cartesian' or 'polar'.
-        z_type  :   Type of surface: 'thin', 'conical', 'flared', 'func'.
-        params  :   Parameters need for the specified surface. If a 'thin' disk
+        x0, y0:     Disk offset in [arcsec].
+        inc:        Inclination of disk in [degrees].
+        PA:         Position angle of the disk major axis E of N in [degrees].
+        frame:      Coordinates returned, either 'cartesian' or 'polar'.
+        z_type:     Type of surface: 'thin', 'conical', 'flared', 'func'.
+        params:     Parameters need for the specified surface. If a 'thin' disk
                     is considered, then params=None. If a 'conical' disk then
                     params=[psi] where psi is the opening angle between the
                     surface and the midplane in degrees. If 'flared' then the
@@ -105,17 +106,19 @@ class imagecube:
                         z(r) = aspect_ratio * r**flaring_angle
 
                     and thus params=[aspect_ratio, flaring_angle].
-        nearest :   Which side of the disk is nearest to the observer.
-        get_z   :   Return the z value. If assuming a thin disk then this will
+        nearest:    Which side of the disk is nearest to the observer.
+        get_z:      Return the z value. If assuming a thin disk then this will
                     be an array of zeros.
+        flat:       Return flattened coordaintes.
 
         - Output -
 
-        x, y    :   Disk coordinates if frame='cartesian'.
-        r, t    :   Disk coordinates if frame='polar'.
+        x, y:       Disk coordinates if frame='cartesian'.
+        r, t:       Disk coordinates if frame='polar'.
         """
 
         # Check the input variables.
+
         frame = frame.lower()
         if frame not in ['cartesian', 'polar']:
             raise ValueError("frame must be 'cartesian' or 'polar'.")
@@ -127,21 +130,22 @@ class imagecube:
             raise ValueError("Either 'north' or 'south' must be closer.")
         tilt = 1.0 if nearest == 'north' else -1.0
 
-        # # Rescale for the PA definition (major axis east of north).
-        # PA -= 45.
-
         # Geometrically thin disk.
+
         if z_type == 'thin':
             if frame == 'cartesian':
                 c1, c2 = self._get_midplane_cart_coords(x0, y0, inc, PA)
             else:
                 c1, c2 = self._get_midplane_polar_coords(x0, y0, inc, PA)
+            if flat:
+                return c1.flatten(), c2.flatten()
             if get_z:
                 return c1, c2, np.zeros(c1.shape)
             return c1, c2
 
         # If not thin then must have some vertical extent.
         # Define the height functions here to pass to the other functions.
+
         if z_type == 'conical':
             def func(r):
                 return r * np.tan(np.radians(params))
@@ -153,15 +157,169 @@ class imagecube:
         assert callable(func)
 
         # Geometrically thick disk.
+
         if frame == 'cartesian':
             c1, c2 = self._get_flared_cart_coords(x0, y0, inc, PA, func, tilt)
+            if flat:
+                c1, c2 = c1.flatten(), c2.flatten()
             if get_z:
                 return c1, c2, func(np.hypot(c1, c2))
         else:
             c1, c2 = self._get_flared_polar_coords(x0, y0, inc, PA, func, tilt)
+            if flat:
+                c1, c2 = c1.flatten(), c2.flatten()
             if get_z:
                 return c1, c2, func(c1)
         return c1, c2
+
+    def get_annulus(self, r_min, r_max, PA_min=None, PA_max=None,
+                    exclude_PA=False, x0=0.0, y0=0.0, inc=0.0, PA=0.0,
+                    z_type='thin', params=None, nearest=None,
+                    return_theta=True):
+        """
+        Return an annulus (or partial), of spectra and polar angles.
+
+        - Input -
+
+        r_min:          Minimum midplane radius of the annulus in [arcsec].
+        r_max:          Maximum midplane radius of the annulus in [arcsec].
+        PA_min:         Minimum polar angle of the segment in [degrees].
+        PA_max:         Maximum polar angle of the segment in [degrees].
+        exclude_PA:     If True, exclude the provided polar angle range.
+        x0, y0:         Disk center offset in [arcsec].
+        inc:            Inclination of the disk in [degrees].
+        PA:             Positiona angle of the disk in [degrees]. Given as the
+                        angle of the red-shifted major axis measured E of N.
+        z_type:         Type of emission surface to assume (see disk_coords()).
+                        By deafult assume a thin disk.
+        params:         Parameters needed for the provided z_type.
+        nearest:        Nearerst side of the disk for 3D disks.
+        return_theta:   If True, return the midplane polar angles of the
+                        points in [radians].
+
+        - Output -
+
+        spectra:        The spectra from each pixel in the annulus.
+        theta:          If requested, the midplane polar angles in [radians] of
+                        each of the returned spectra.
+        """
+
+        # Check emission surface parameters.
+
+        if z_type.lower() != 'thin' and nearest is None:
+            raise ValueError("Must specify nearest side for 3D disk.")
+
+        # Get the mask and flatten.
+
+        dvals = self.data.copy().reshape(self.data.shape[0], -1)
+        mask = self.get_mask(r_min=r_min, r_max=r_max, PA_min=PA_min,
+                             PA_max=PA_max, exclude_PA=exclude_PA, x0=x0,
+                             y0=y0, inc=inc, PA=PA, z_type=z_type,
+                             params=params, nearest=nearest, flat=True)
+        assert mask.shape == dvals.shape[1]
+
+        # Calculate the polar angles if necessary.
+
+        if return_theta:
+            tvals = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA,
+                                     z_type=z_type, params=params,
+                                     nearest=nearest, flat=True)[1]
+            return dvals[:, mask].T, tvals[mask]
+        return dvals[:, mask].T
+
+    def disk_to_sky(self, coords, frame='polar', side='top', x0=0.0, y0=0.0,
+                    inc=0.0, PA=0.0, z_type='thin', params=None,
+                    nearest='north', return_idx=False):
+        """
+        For a given midplane coordinate, either (r, theta) or (x, y), return
+        the nearest sky coordiantes in (x, y). Useful for plotting.
+
+        - Input -
+
+        coords:     Midplane coordaintes to find in (x, y) in [arcsec] or
+                    (r, theta) in [arcsec, degrees].
+        frame:      Frame of input coordinates, either 'cartesian' or 'polar'.
+        side:       Side of the disk to use in deprojection, 'top' or .bottom'.
+        x0, y0:     Disk offset in [arcsec].
+        inc:        Inclination of the disk in [degree].
+        PA:         Position angle of the disk in [degrees]. Given as the angle
+                    of the red-shifted major axis measured E of N.
+        z_type:     Type of emission surface to assume (see disk_coords()). By
+                    default assume a thin disk.
+        params:     Parameters needed for the provided z_type.
+        nearest:    Nearest side of the disk.
+        return_idx: If True, return the indices of the nearest pixels.
+
+        - Output -
+
+        x, y:       Sky-plane coordinates of the provided disk coordinates in
+                    [arcsec].
+
+        """
+
+        # Import the necessary module.
+
+        try:
+            from scipy.interpolate import griddata
+        except Exception:
+            raise ValueError("Can't find 'scipy.interpolate.griddata'.")
+
+        # Transform cartesian coordintes then transform back.
+
+        frame = frame.lower()
+        if frame not in ['polar', 'cartesian']:
+            raise ValueError("frame must be 'polar' or 'cartesian'.")
+        coords = np.atleast_2d(coords)
+        if coords.shape[0] != 2 and coords.shape[1] == 2:
+            coords = coords.T
+        if coords.shape[0] != 2:
+            raise ValueError("coords must be of shape [2 x N].")
+        if frame == 'polar':
+            xdisk = coords[0] * np.cos(np.radians(coords[1]))
+            ydisk = coords[0] * np.sin(np.radians(coords[1]))
+        else:
+            xdisk, ydisk = coords
+
+        # Correct for the near and far side of the disk.
+
+        z_type = z_type.lower()
+        if z_type not in ['thin', 'conical', 'flared']:
+            raise ValueError("Unknown z_type.")
+        side = side.lower()
+        if side not in ['top', 'bottom']:
+            raise ValueError("Unknown side.")
+        if z_type == 'conical' and side == 'bottom':
+            params = -1.0 * np.atleast_1d(params)[0]
+        elif z_type == 'flared' and side == 'bottom':
+            params[0] = -1.0 * params[0]
+
+        # Calculate the midplane coordinates and generate a grid so we can map
+        # disk coordinates to sky coordinates.
+
+        xdisk_grid, ydisk_grid = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA,
+                                                  z_type=z_type, params=params,
+                                                  nearest=nearest, flat=True,
+                                                  frame='cartesian')
+        xsky_grid, ysky_grid = self._get_cart_sky_coords(x0=0.0, y0=0.0)
+        xsky_grid, ysky_grid = xsky_grid.flatten(), ysky_grid.flatten()
+
+        xsky = griddata((xdisk_grid, ydisk_grid), xsky_grid, (xdisk, ydisk),
+                        method='nearest', fill_value=np.nan)
+        ysky = griddata((xdisk_grid, ydisk_grid), ysky_grid, (xdisk, ydisk),
+                        method='nearest', fill_value=np.nan)
+
+        # Return the values or calculate the indices.
+        # TODO: Nicer way of de-vectorising.
+
+        if not return_idx:
+            xsky = xsky if xsky.size > 1 else xsky[0]
+            ysky = ysky if ysky.size > 1 else ysky[0]
+            return xsky, ysky
+        xidx = np.array([abs(self.xaxis - x).argmin() for x in xsky])
+        yidx = np.array([abs(self.yaxis - y).argmin() for y in ysky])
+        xidx = xidx if xidx.size > 1 else xidx[0]
+        yidx = yidx if yidx.size > 1 else yidx[0]
+        return xidx, yidx
 
     def _estimate_PA(self, clip=95):
         """Estimate the PA of the disk."""
@@ -568,19 +726,22 @@ class imagecube:
 
     def get_mask(self, r_min=None, r_max=None, PA_min=None, PA_max=None,
                  exclude_r=False, exclude_PA=False, x0=0.0, y0=0.0, inc=0.0,
-                 PA=0.0, z_type='thin', params=None, nearest='north'):
+                 PA=0.0, z_type='thin', params=None, nearest='north',
+                 flat=False):
         """Returns a 2D mask for pixels in the given region."""
         rvals, tvals = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA,
                                         z_type=z_type, params=params,
                                         nearest=nearest, frame='polar')
         r_min = rvals.min() if r_min is None else r_min
         r_max = rvals.max() if r_max is None else r_max
-        PA_min = tvals.min() if PA_min is None else PA_min
-        PA_max = tvals.max() if PA_max is None else PA_max
+        PA_min = tvals.min() if PA_min is None else np.radians(PA_min)
+        PA_max = tvals.max() if PA_max is None else np.radians(PA_max)
         r_mask = np.logical_and(rvals >= r_min, rvals <= r_max)
         PA_mask = np.logical_and(tvals >= PA_min, tvals <= PA_max)
         r_mask = ~r_mask if exclude_r else r_mask
         PA_mask = ~PA_mask if exclude_PA else PA_mask
+        if flat:
+            return (r_mask * PA_mask).flatten()
         return r_mask * PA_mask
 
     # == Functions to read the data cube axes. == #

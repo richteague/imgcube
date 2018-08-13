@@ -180,22 +180,21 @@ class rotatedcube(imagecube):
 
         # Deprojected pixel coordinates.
 
+        '''
         rvals, tvals = self.disk_coords(self.x0, self.y0, self.inc, 90.,
                                         z_type='func',
                                         params=self.emission_surface,
                                         nearest=self.nearest)
         rvals, tvals = rvals.flatten(), tvals.flatten()
-        if rbins is None and rvals is None and self.verbose:
+        '''
+
+        # Default radial binning.
+
+        if rbins is None and rpnts is None and self.verbose:
             print("WARNING: No radial sampling set, this will take a while.")
         rbins, rpnts = self._radial_sampling(rbins=rbins, rvals=rpnts)
 
-        # Flatten the data to [velocity, nxpix * nypix].
-
-        dvals = self.data.copy().reshape(self.data.shape[0], -1)
-        if dvals.shape != (self.velax.size, self.nxpix * self.nypix):
-            raise ValueError("Wrong data shape.")
-
-        # Cycle through each annulus and apply the method.
+        # Cycle through each annulus and apply the appropriate method.
 
         v_rot = []
         for r in range(1, rbins.size):
@@ -205,13 +204,15 @@ class rotatedcube(imagecube):
 
             # Get the annulus of points.
 
-            mask = self.get_mask(r_min=rbins[r-1], r_max=rbins[r],
-                                 PA_min=PA_min, PA_max=PA_max,
-                                 exclude_PA=exclude_PA, x0=self.x0, y0=self.y0,
-                                 inc=self.inc, PA=90., z_type='func',
-                                 params=self.emission_surface,
-                                 nearest=self.nearest).flatten()
-            spectra, theta = dvals[:, mask].T, tvals[mask]
+            spectra, theta = self.get_annulus(r_min=rbins[r-1], r_max=rbins[r],
+                                              PA_min=PA_min, PA_max=PA_max,
+                                              exclude_PA=exclude_PA,
+                                              x0=self.x0, y0=self.y0,
+                                              inc=self.inc, PA=90.,
+                                              z_type='func',
+                                              params=self.emission_surface,
+                                              nearest=self.nearest,
+                                              return_theta=True)
 
             # Extract spectra roughly a beam apart in midplane coordinates.
             # There is some randomization here so multiple runs are required.
