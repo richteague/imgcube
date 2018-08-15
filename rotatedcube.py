@@ -248,7 +248,7 @@ class rotatedcube(imagecube):
                 if self.verbose:
                     print("WARNING: Not enough spectra. Skipping annulus.")
                 if method.lower() == 'dv':
-                    v_rot += [0.0]
+                    v_rot += [np.nan]
                 else:
                     v_rot += [np.zeros((3, 4))]
                 continue
@@ -258,7 +258,7 @@ class rotatedcube(imagecube):
 
             # Infer the rotation velocity.
 
-            v_kep = self._projected_vkep(rpnts[r-1])
+            v_kep = self.projected_vkep(rpnts[r-1])
             if method.lower() == 'dv':
                 v_rot += [annulus.get_vrot_dV(vref=v_kep)]
             else:
@@ -269,16 +269,17 @@ class rotatedcube(imagecube):
 
         return rpnts, np.squeeze(v_rot)
 
-    def _projected_vkep(self, radius, theta=None):
+    def projected_vkep(self, rvals, theta=0.0):
         """Return the projected Keplerian rotation at the given radius ["]."""
         try:
             import scipy.constants as sc
         except:
             raise ValueError("Cannot find scipy.constants.")
-        vkep = sc.G * self.mstar * self.msun
-        vkep = np.sqrt(vkep / radius / self.dist / sc.au)
-        vkep *= 1.0 if theta is None else np.cos(theta)
-        return vkep * np.sin(np.radians(self.inc))
+        z = self.emission_surface(rvals) * self.dist * sc.au
+        r = rvals * self.dist * sc.au
+        vkep = sc.G * self.mstar * self.msun * np.power(r, 2.0)
+        vkep = np.sqrt(vkep / np.power(np.hypot(r, z), 3.0))
+        return vkep * np.sin(np.radians(self.inc)) * np.cos(theta)
 
     def fit_rotation_curve(self, rvals, vrot, dvrot=None, beam_clip=2.0,
                            fit_mstar=True, verbose=True, save=True):

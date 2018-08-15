@@ -216,7 +216,6 @@ class imagecube:
                              PA_max=PA_max, exclude_PA=exclude_PA, x0=x0,
                              y0=y0, inc=inc, PA=PA, z_type=z_type,
                              params=params, nearest=nearest, flat=True)
-        assert mask.shape == dvals.shape[1]
 
         # Calculate the polar angles if necessary.
 
