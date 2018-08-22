@@ -386,38 +386,37 @@ class imagecube:
 
         - Input -
 
-        rpnts:              Bin centers in [arcsec] for the binning.
-        rbins:              Bin edges in [arcsec] for the binning.
-                            Note: Only specify either rpnts or rbins.
-        x0, y0:             Source centre offset in [arcsec].
-        inc, PA:            Inclination and position angle of the disk, both in
-                            [degrees].
-        z_type:             The type of surface to assume, either 'thin' for a
-                            geometrically thin disk, or 'conical' or 'flared'.
-                            For the latter two options, see disk_coords().
-        nearest:            If a 3D disk is considered, which side of the disk
-                            is closest to the observer: 'north' or 'south'.
-        params:             Parameters associated with the chosen 'z_type'.
-        collapse:           Method to collapse the cube: 'max', maximum value
-                            along the spectral axis; 'sum', sum along the
-                            spectral axis; 'int', integrated along the spectral
-                            axis.
-        statistic:          Return either the mean and standard deviation for
-                            each annulus with 'mean' or the 16th, 50th and 84th
-                            percentiles with 'percentiles'.
-        PA_mask:            Only include values within [PA_min, PA_max].
-        excxlude_PA_mask:   Exclude the values within [PA_min, PA_max]
-        beam_factor:        Include the number of beams averaged over in the
-                            calculation of the uncertainty.
-        clip_values:        Clip values. If a single value is specified, clip
-                            all absolute values below this, otherwise, if two
-                            values are specified, clip values between these.
+        rpnts:          Bin centers in [arcsec] for the binning.
+        rbins:          Bin edges in [arcsec] for the binning. Note: Only
+                        specify either rpnts or rbins.
+        x0, y0:         Source centre offset in [arcsec].
+        inc, PA:        Inclination and position angle of the disk, both in
+                        [degrees].
+        z_type:         The type of surface to assume, either 'thin' for a
+                        geometrically thin disk, or 'conical' or 'flared'. For
+                        the latter two options, see disk_coords().
+        nearest:        If a 3D disk is considered, which side of the disk is
+                        closest to the observer: 'north' or 'south'.
+        params:         Parameters associated with the chosen 'z_type'.
+        collapse:       Method to collapse the cube: 'max', maximum value along
+                        the spectral axis; 'sum', sum along the spectral axis;
+                        'int', integrated along the spectral axis.
+        statistic:      Return either the mean and standard deviation for each
+                        annulus with 'mean' or the 16th, 50th and 84th
+                        percentiles with 'percentiles'.
+        PA_mask:        Only include values within [PA_min, PA_max].
+        excxlude_PA:    Exclude the values within [PA_min, PA_max]
+        beam_factor:    Include the number of beams averaged over in the
+                        calculation of the uncertainty.
+        clip_values:    Clip values. If a single value is specified, clip all
+                        absolute values below this, otherwise, if two values
+                        are specified, clip values between these.
 
         - Output -
 
-        pnts:               Array of bin centers.
-        y:                  Array of the bin means or medians.
-        dy:                 Array of uncertainties in the bin.
+        pnts:           Array of bin centers.
+        y:              Array of the bin means or medians.
+        dy:             Array of uncertainties in the bin.
         """
 
         # Collapse the data to a 2D image if necessary.
@@ -584,8 +583,8 @@ class imagecube:
     def get_deprojected_spectra(self, rbins=None, rpnts=None, x0=0.0, y0=0.0,
                                 inc=0.0, PA=0.0, z_type='thin',
                                 nearest='north', params=None, vrot=None,
-                                mstar=None, dist=100., PA_min=-np.pi,
-                                PA_max=np.pi, exclude_PA=False, resample=True):
+                                mstar=None, dist=100., PA_min=None,
+                                PA_max=None, exclude_PA=False, resample=True):
         """
         Return the deprojected spectra using a velocity profile. If vrot is
         specified, must be sampled at the rpnts values and assumed to already
@@ -626,12 +625,7 @@ class imagecube:
         # Set the radial sampling.
         rbins, rpnts = self._radial_sampling(rbins=rbins, rvals=rpnts)
 
-        # Calculate the deprojected coordinates.
-        rvals, tvals = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA,
-                                        z_type=z_type, params=params,
-                                        nearest=nearest)
-
-        # Calculate the 2D projected velocity value.
+        # Calculate the projected velocity profile.
         if vrot is None and mstar is None:
             raise ValueError("Must specify either 'vrot' or 'mstar'.")
         if vrot is not None and mstar is not None:
