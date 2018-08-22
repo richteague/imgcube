@@ -67,8 +67,8 @@ class rotatedcube(imagecube):
         except:
             raise ValueError("Cannot find the eddy package.")
 
-        if method.lower() not in ['bin', 'gp']:
-            raise ValueError("Method must be ['bin', 'GP']")
+        if method.lower() not in ['bin', 'gp', 'raw']:
+            raise ValueError("Method must be ['bin', 'GP', 'raw']")
 
         # Deprojected pixel coordinates.
 
@@ -250,7 +250,7 @@ class rotatedcube(imagecube):
                 if method.lower() == 'dv':
                     v_rot += [np.nan]
                 else:
-                    v_rot += [np.zeros((3, 4))]
+                    v_rot += [np.nan * np.ones((3, 4))]
                 continue
 
             annulus = ensemble(spectra=spectra, theta=theta, velax=self.velax,

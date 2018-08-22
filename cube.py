@@ -10,6 +10,7 @@ from astropy.convolution import Kernel
 from astropy.convolution import convolve
 from astropy.convolution import convolve_fft
 from functions import percentiles_to_errors
+from scipy.interpolate import interp1d
 
 
 class imagecube:
@@ -50,6 +51,7 @@ class imagecube:
         # Spectral axis.
         self.velax = self._readvelocityaxis()
         self.chan = np.mean(np.diff(self.velax))
+        self.freqax = self._readfrequencyaxis()
 
         # Get the beam properties of the beam.
         try:
@@ -577,6 +579,91 @@ class imagecube:
                        zorder=kwargs.get('zorder', 1000))
         ax.add_patch(beam)
 
+    # == Spectra Functions == #
+
+    def get_deprojected_spectra(self, rbins=None, rpnts=None, x0=0.0, y0=0.0,
+                                inc=0.0, PA=0.0, z_type='thin',
+                                nearest='north', params=None, vrot=None,
+                                mstar=None, dist=100., PA_min=-np.pi,
+                                PA_max=np.pi, exclude_PA=False, resample=True):
+        """
+        Return the deprojected spectra using a velocity profile. If vrot is
+        specified, must be sampled at the rpnts values and assumed to already
+        have the projection (sin(i) component) applied. Otherwise a Keplerian
+        curve can be used (including accounting for the height).
+
+        - Input -
+
+        rbins:      None
+        rpnts:      None
+        x0, y0:     None
+        inc:        None
+        PA:         None
+        z_type:     None
+        nearest:    None
+        params:     None
+        vrot:       None
+        mstar:      None
+        dist:       None
+        PA_min:     None
+        PA_max:     None
+        exclude_PA: None
+        resample:   None
+
+        - Output -
+
+        rpnts:      Radius of where spectra were extracted [au].
+        vrot:       Rotation velocity used for deprojection [m/s].
+        spectra:    Array of deprojected spectra.
+        """
+
+        # Load up eddy.
+        try:
+            from eddy.eddy import ensemble
+        except:
+            raise ValueError("Cannot find the eddy package.")
+
+        # Set the radial sampling.
+        rbins, rpnts = self._radial_sampling(rbins=rbins, rvals=rpnts)
+
+        # Calculate the deprojected coordinates.
+        rvals, tvals = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA,
+                                        z_type=z_type, params=params,
+                                        nearest=nearest)
+
+        # Calculate the 2D projected velocity value.
+        if vrot is None and mstar is None:
+            raise ValueError("Must specify either 'vrot' or 'mstar'.")
+        if vrot is not None and mstar is not None:
+            raise ValueError("Specify either 'vrot' or 'mstar', not both.")
+        if vrot is not None:
+            if vrot.size != rpnts.size:
+                raise ValueError("'vrot' must have same size as 'rpnts'.")
+            if self.verbose:
+                print("Using the user specified rotation velocity.")
+        else:
+            vrot = self.keplerian_curve(rpnts=rpnts, mstar=mstar,
+                                        z_type=z_type, params=params,
+                                        dist=dist) * np.sin(np.radians(inc))
+
+        # Cycle through the annuli and deproject them, returning a Numpy array.
+        deprojected = []
+        for r in range(1, rbins.size):
+            spectra, theta = self.get_annulus(r_min=rbins[r-1], r_max=rbins[r],
+                                              PA_min=PA_min, PA_max=PA_max,
+                                              exclude_PA=exclude_PA, x0=x0,
+                                              y0=y0, inc=inc, PA=PA,
+                                              z_type=z_type, params=params,
+                                              nearest=nearest,
+                                              return_theta=True)
+            annulus = ensemble(spectra=spectra, theta=theta, velax=self.velax,
+                               suppress_warnings=0 if self.verbose else 1)
+            if resample:
+                deprojected += [annulus.deprojected_spectrum(vrot[r-1])]
+            else:
+                deprojected += [annulus.deprojected_spectra(vrot[r-1])]
+        return rpnts, vrot, np.squeeze(deprojected)
+
     # == Rotation Functions == #
 
     def keplerian_profile(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z_type='thin',
@@ -594,6 +681,25 @@ class imagecube:
         r_max = rvals.max() if r_max is None else r_max
         mask = np.logical_and(rvals >= r_min, rvals <= r_max)
         return np.where(mask, vrot, np.nan)
+
+    def keplerian_curve(self, rpnts, mstar, z_type='thin', params=None,
+                        dist=100.):
+        """Return a Keplerian rotation profile at rpnts in [m/s]."""
+
+        # Define the coordinates.
+        if z_type.lower() not in ['thin', 'conical', 'flared']:
+            raise ValueError("Unknown z_type: %s." % z_type)
+        if z_type.lower() == 'thin':
+            zpnts = np.zeros(rpnts.size)
+        elif z_type.lower() == 'conical':
+            zpnts = rpnts * np.tan(np.radians(params))
+        else:
+            zpnts = params[0] * np.power(rpnts, params[1])
+        r_m, z_m = rpnts * dist * sc.au, zpnts * dist * sc.au
+
+        # Calculate the Keplerian rotation.
+        vkep = sc.G * mstar * self.msun * np.power(r_m, 2.0)
+        return np.sqrt(vkep / np.power(np.hypot(r_m, z_m), 3.0))
 
     # == Functions to write a Keplerian mask for CLEANing. == #
 
@@ -656,7 +762,7 @@ class imagecube:
         mask = [self._keplerian_mask(x0=x0, y0=y0, inc=inc, PA=PA,
                                      z_type=z_type, nearest=nearest, params=p,
                                      mstar=mstar, r_max=r_max, r_min=r_min,
-                                     dist=dist, vlsr=vlsr, dV=dV, dVq=dVq)
+                                     dist=dist, vlsr=v, dV=dV, dVq=dVq)
                 for v in vlsr for p in iter_params]
         mask = np.where(np.nansum(mask, axis=0) > 0, 1, 0)
         if mask.shape != self.data.shape:
@@ -809,7 +915,19 @@ class imagecube:
             velax = self._readspectralaxis()
         return velax
 
+    def _readfrequencyaxis(self):
+        """Returns the frequency axis in [Hz]."""
+        if 'freq' in self.header['ctype3'].lower():
+            return self._readspecralaxis()
+        nu = self._readrestfreq()
+        return nu * (1.0 - self._readvelocityaxis() / sc.c)
+
     def _jy2k(self):
         """Jy/beam to K conversion."""
+
+
+        # temp = 2 * sc.h * nu**3 / sc.c**2
+        # temp /=
+        # temp = ((np.log(((2.*c.h*nu**3./c.c**2.)/(fluxobs*u.sr))+1.)/(c.h*nu)*c.k_B)**(-1.))
         jy2k = 1e-26 * sc.c**2 / self.nu**2 / 2. / sc.k
         return jy2k / self._calculate_beam_area_str()
