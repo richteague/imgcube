@@ -68,14 +68,11 @@ class imagecube:
         # Convert brightness to Kelvin if appropriate.
         self.nu = self._readrestfreq()
         self.bunit = self.header['bunit'].lower()
-        if self.bunit == 'k':
-            self.jy2k = 1.0
-        else:
-            self.jy2k = self._jy2k()
-        if kelvin:
-            if self.data.ndim == 2 and self.verbose:
+
+        if self.bunit != 'k' and kelvin:
+            if self.verbose:
                 print("WARNING: Converting to Kelvin.")
-            self.data *= self.jy2k
+            self.data = self._convert_to_Tb()
             self.bunit = 'k'
 
         # Clip the clube down to a smaller field of view.
@@ -584,7 +581,8 @@ class imagecube:
                                 inc=0.0, PA=0.0, z_type='thin',
                                 nearest='north', params=None, vrot=None,
                                 mstar=None, dist=100., PA_min=None,
-                                PA_max=None, exclude_PA=False, resample=True):
+                                PA_max=None, exclude_PA=False, resample=True,
+                                frequency=False):
         """
         Return the deprojected spectra using a velocity profile. If vrot is
         specified, must be sampled at the rpnts values and assumed to already
@@ -593,27 +591,36 @@ class imagecube:
 
         - Input -
 
-        rbins:      None
-        rpnts:      None
-        x0, y0:     None
-        inc:        None
-        PA:         None
-        z_type:     None
-        nearest:    None
-        params:     None
-        vrot:       None
-        mstar:      None
-        dist:       None
-        PA_min:     None
-        PA_max:     None
-        exclude_PA: None
-        resample:   None
+        rbins:      Bin edges in [arcsec] for the binning.
+        rpnts:      Bin centers in [arcsec] for the binning.
+                    Note: Only specify either rpnts or rbins.
+        x0, y0:     Source centre offset in [arcsec].
+        inc, PA:    Source inlination and position angle, both in [degrees].
+        z_type:     Type of emission surface to assume. Must be 'thin',
+                    'conical' or 'flared'. See disk_coords() for more details.
+        nearest:    Which side of the disk is closer to the observer. Only
+                    necessary if z_type is not 'thin'.
+        params:     Parameters for the emission surface. See disk_coords() for
+                    more details.
+        vrot:       The rotation curve to use for the deprojection. It must be
+                    the same size rpnts (or rbins - 1).
+        mstar:      If specified will calculate an analytical rotation curve
+                    taking into account the height of the emission surface.
+        dist:       Distance to the source. Only required if mstar is not None.
+                    Note: Only specify either vrot or mstar.
+        PA_min:     Minimum PA (of disk polar coordinates) to include.
+        PA_max:     Maximum PA (of disk polar coordinates) to include.
+        exclude_PA: If true, exclude the region PA_min <= PA <= PA_max.
+        resample:   Bin the shifted spectra back down to the original velocity
+                    axes.
+        frequency:  If true, return the frequency in [Hz] rather than velocity.
 
         - Output -
 
         rpnts:      Radius of where spectra were extracted [au].
         vrot:       Rotation velocity used for deprojection [m/s].
-        spectra:    Array of deprojected spectra.
+        spectra:    Array of deprojected spectra containing the spectral axis,
+                    either velocity or frequency, and the intensity.
         """
 
         # Load up eddy.
@@ -650,12 +657,19 @@ class imagecube:
                                               z_type=z_type, params=params,
                                               nearest=nearest,
                                               return_theta=True)
+
+            # Deproject the annulus.
             annulus = ensemble(spectra=spectra, theta=theta, velax=self.velax,
                                suppress_warnings=0 if self.verbose else 1)
             if resample:
-                deprojected += [annulus.deprojected_spectrum(vrot[r-1])]
+                specax, spectrum = annulus.deprojected_spectrum(vrot[r-1])
             else:
-                deprojected += [annulus.deprojected_spectra(vrot[r-1])]
+                specax, spectrum = annulus.deprojected_spectra(vrot[r-1])
+
+            # Convert to frequency if required.
+            if frequency:
+                specax = self._readrestfreq() * (1.0 - specax / sc.c)
+            deprojected += [[specax, spectrum]]
         return rpnts, vrot, np.squeeze(deprojected)
 
     # == Rotation Functions == #
@@ -698,9 +712,9 @@ class imagecube:
     # == Functions to write a Keplerian mask for CLEANing. == #
 
     def CLEAN_mask(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z_type='thin',
-                   nearest='north', params=None, mstar=1.0, r_max=None,
-                   r_min=None, dist=100., vlsr=0.0, dV=250., nbeams=0.0,
-                   dVq=0.0, fname=None, fast=True, return_mask=False):
+                   nearest='north', params=None, mstar=1.0, dist=100.,
+                   r_max=None, r_min=None, vlsr=0.0, dV0=250., dVq=0.0,
+                   nbeams=0.0, fname=None, fast=True, return_mask=False):
         """
         Using the attached FITS cube, generate a Keplerian mask for CASA. This
         also allows for 3D disks and the change in rotation pattern associated
@@ -718,11 +732,39 @@ class imagecube:
         Additionally we can change the local linewidth as a function of radius.
         This is simply a power-law function,
 
-            dV = dV0 * (r / 1")**dVq
+            dV = dV0 * (r / 1")**dVq,
+
+        and allows a little more flexibility in changing the width of the mask
+        as a function of radius. Typical values would be dV0 ~ 250. and
+        dVq ~ 0.3.
 
         - Inputs -
 
-        Coming Soon.
+        rbins:      Bin edges in [arcsec] for the binning.
+        rpnts:      Bin centers in [arcsec] for the binning.
+                    Note: Only specify either rpnts or rbins.
+        x0, y0:     Source centre offset in [arcsec].
+        inc, PA:    Source inlination and position angle, both in [degrees].
+        z_type:     Type of emission surface to assume. Must be 'thin',
+                    'conical' or 'flared'. See disk_coords() for more details.
+        nearest:    Which side of the disk is closer to the observer. Only
+                    necessary if z_type is not 'thin'.
+        params:     Parameters for the emission surface. See disk_coords() for
+                    more details.
+        mstar:      Stellar mass in [Msun].
+        dist:       Distance to the source in [pc].
+        r_min:      Minimum radius of the mask in [arcsec].
+        r_max:      Maximum radius of the mask in [arcsec].
+        vlsr:       Systemic velocity of the system in [m/s]. Can also be a
+                    list of values to allow for multiple lines / hyperfine
+                    transitions.
+        dV0, dVq:   Properties of the linewidth power-law profile.
+        nbeams:     Number of beams to convolve the mask with.
+        fast:       When convolving, whether to use the FFT method.
+        fname:      Filename for the saved FITS file. By default it changes the
+                    end from '*.fits' to '*.mask.fits'. Note it will overwrite
+                    any other files of the same name.
+        return_mask: If true, return the mask as a 3D array rather than saving.
 
         - Outputs -
 
@@ -913,15 +955,15 @@ class imagecube:
         """Returns the frequency axis in [Hz]."""
         if 'freq' in self.header['ctype3'].lower():
             return self._readspecralaxis()
-        nu = self._readrestfreq()
-        return nu * (1.0 - self._readvelocityaxis() / sc.c)
+        return self._readrestfreq() * (1.0 - self._readvelocityaxis() / sc.c)
+
+    def _convert_to_Tb(self):
+        """Return data converted from Jy/beam to K using full Planck law."""
+        Tb = 1e-26 * self.data / self._calculate_beam_area_str()
+        Tb = 2. * sc.h * np.power(self.nu, 3) / Tb / np.power(sc.c, 2)
+        return sc.k / sc.h / self.nu / np.log(Tb + 1.0)
 
     def _jy2k(self):
         """Jy/beam to K conversion."""
-
-
-        # temp = 2 * sc.h * nu**3 / sc.c**2
-        # temp /=
-        # temp = ((np.log(((2.*c.h*nu**3./c.c**2.)/(fluxobs*u.sr))+1.)/(c.h*nu)*c.k_B)**(-1.))
         jy2k = 1e-26 * sc.c**2 / self.nu**2 / 2. / sc.k
         return jy2k / self._calculate_beam_area_str()
