@@ -10,7 +10,6 @@ from astropy.convolution import Kernel
 from astropy.convolution import convolve
 from astropy.convolution import convolve_fft
 from functions import percentiles_to_errors
-from scipy.interpolate import interp1d
 
 
 class imagecube:
@@ -18,7 +17,7 @@ class imagecube:
     msun = 1.988e30
     fwhm = 2. * np.sqrt(2 * np.log(2))
 
-    def __init__(self, path, absolute=False, kelvin=True, clip=None,
+    def __init__(self, path, absolute=False, kelvin='RJ', clip=None,
                  verbose=None, suppress_warnings=True):
         """Load up an image cube."""
 
@@ -65,14 +64,20 @@ class imagecube:
             self.bpa = 0.0
             self.beamarea = self.dpix**2.0
 
-        # Convert brightness to Kelvin if appropriate.
+        # Convert brightness to Kelvin if appropriate. If kelvin = 'rj' then
+        # use the Rayleigh-Jeans approximation.
         self.nu = self._readrestfreq()
         self.bunit = self.header['bunit'].lower()
-
         if self.bunit != 'k' and kelvin:
             if self.verbose:
                 print("WARNING: Converting to Kelvin.")
-            self.data = self._convert_to_Tb()
+            if type(kelvin) is str:
+                if kelvin.lower() == 'rj' or 'rayleigh-jeans':
+                    if self.verbose:
+                        print("\t Using the Rayleigh-Jeans approximation.")
+                    self.data = self._jybeam_to_Tb_RJ()
+            else:
+                self.data = self._jybeam_to_Tb()
             self.bunit = 'k'
 
         # Clip the clube down to a smaller field of view.
@@ -798,7 +803,7 @@ class imagecube:
         mask = [self._keplerian_mask(x0=x0, y0=y0, inc=inc, PA=PA,
                                      z_type=z_type, nearest=nearest, params=p,
                                      mstar=mstar, r_max=r_max, r_min=r_min,
-                                     dist=dist, vlsr=v, dV=dV, dVq=dVq)
+                                     dist=dist, vlsr=v, dV=dV0, dVq=dVq)
                 for v in vlsr for p in iter_params]
         mask = np.where(np.nansum(mask, axis=0) > 0, 1, 0)
         if mask.shape != self.data.shape:
@@ -954,16 +959,22 @@ class imagecube:
     def _readfrequencyaxis(self):
         """Returns the frequency axis in [Hz]."""
         if 'freq' in self.header['ctype3'].lower():
-            return self._readspecralaxis()
+            return self._readspectralaxis()
         return self._readrestfreq() * (1.0 - self._readvelocityaxis() / sc.c)
 
-    def _convert_to_Tb(self):
-        """Return data converted from Jy/beam to K using full Planck law."""
-        Tb = 1e-26 * self.data / self._calculate_beam_area_str()
-        Tb = 2. * sc.h * np.power(self.nu, 3) / Tb / np.power(sc.c, 2)
-        return sc.h * self.nu / sc.k / np.log(Tb + 1.0)
+    def _background_Tb(self, Tcmb=2.73):
+        """Return the background brightness temperature for the CMB."""
+        Tbg = 2. * sc.h * np.power(self.nu, 3) / np.power(sc.c, 2)
+        return Tbg / (np.exp(sc.h * self.nu / sc.k / Tcmb) - 1.0)
 
-    def _jy2k(self):
+    def _jybeam_to_Tb(self):
+        """Return data converted from Jy/beam to K using full Planck law."""
+        Tb = 1e-26 * abs(self.data) / self._calculate_beam_area_str()
+        Tb = 2. * sc.h * np.power(self.nu, 3) / Tb / np.power(sc.c, 2)
+        Tb = sc.h * self.nu / sc.k / np.log(Tb + 1.0)
+        return np.where(self.data >= 0.0, Tb, -Tb)
+
+    def _jybeam_to_Tb_RJ(self):
         """Jy/beam to K conversion."""
         jy2k = 1e-26 * sc.c**2 / self.nu**2 / 2. / sc.k
-        return jy2k / self._calculate_beam_area_str()
+        return jy2k * self.data / self._calculate_beam_area_str()
