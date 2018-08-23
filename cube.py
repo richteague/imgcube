@@ -961,7 +961,7 @@ class imagecube:
         """Return data converted from Jy/beam to K using full Planck law."""
         Tb = 1e-26 * self.data / self._calculate_beam_area_str()
         Tb = 2. * sc.h * np.power(self.nu, 3) / Tb / np.power(sc.c, 2)
-        return sc.k / sc.h / self.nu / np.log(Tb + 1.0)
+        return sc.h * self.nu / sc.k / np.log(Tb + 1.0)
 
     def _jy2k(self):
         """Jy/beam to K conversion."""
