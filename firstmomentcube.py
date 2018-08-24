@@ -10,11 +10,40 @@ from cube import imagecube
 class firstmomentcube(imagecube):
 
     def __init__(self, path, mstar=None, inc=None, dist=None, vlsr=None,
-                 clip=None, verbose=True, suppress_warnings=True):
+                 clip=None, collapse='max', excludepix=None, verbose=True,
+                 suppress_warnings=True):
         """Read in the first moment map."""
         imagecube.__init__(self, path, absolute=False, kelvin=False, clip=clip,
                            verbose=verbose,
                            suppress_warnings=suppress_warnings)
+
+        # Collapse the cube if necessary.
+        if self.data.ndim == 3:
+            if collapse.lower() not in ['ninth', 'first']:
+                raise ValueError("collapse method must be 'ninth' or 'first'.")
+            if self.verbose:
+                print("WARNING: Collapsing the cube using %s." % collapse)
+
+            # Apply the masking.
+            self.data = np.where(np.isfinite(self.data), self.data, 0.0)
+            if excludepix is not None:
+                pix = np.atleast_1d(excludepix)
+                if excludepix.size == 1:
+                    mask = self.data >= pix[0]
+                elif excludepix.size == 2:
+                    mask = np.logical_and(self.data >= pix[0],
+                                          self.data <= pix[1])
+                self.data = np.where(mask, self.data, 0.0)
+
+            # Collapse the cube and convert to [km/s].
+            if collapse.lower() == 'ninth':
+                self.data = np.take(self.velax, np.argmax(self.data, axis=0))
+            else:
+                temp = self.velax[:, None, None] * np.ones(self.data.shape)
+                self.data = np.average(temp, axis=0, weights=self.data)
+            self.data /= 1e3
+
+        # Populate the parameters.
         if mstar is None:
             raise ValueError("WARNING: Must specify mstar [Msun].")
         self.mstar = mstar

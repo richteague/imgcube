@@ -253,6 +253,16 @@ class rotatedcube(imagecube):
                     v_rot += [np.nan * np.ones((3, 4))]
                 continue
 
+            # Check that there are some non-zero values.
+            if np.nansum(spectra) == 0:
+                if self.verbose:
+                    print("WARNING: No positive values. Skipping annulus.")
+                if method.lower() == 'dv':
+                    v_rot += [np.nan]
+                else:
+                    v_rot += [np.nan * np.ones((3, 4))]
+                continue
+
             annulus = ensemble(spectra=spectra, theta=theta, velax=self.velax,
                                suppress_warnings=0 if self.verbose else 1)
 
