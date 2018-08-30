@@ -178,16 +178,6 @@ class rotatedcube(imagecube):
             if self.verbose:
                 print("WARNING: Resampling with GP method not advised.")
 
-        # Deprojected pixel coordinates.
-
-        '''
-        rvals, tvals = self.disk_coords(self.x0, self.y0, self.inc, 90.,
-                                        z_type='func',
-                                        params=self.emission_surface,
-                                        nearest=self.nearest)
-        rvals, tvals = rvals.flatten(), tvals.flatten()
-        '''
-
         # Default radial binning.
 
         if rbins is None and rpnts is None and self.verbose:
@@ -212,35 +202,8 @@ class rotatedcube(imagecube):
                                               z_type='func',
                                               params=self.emission_surface,
                                               nearest=self.nearest,
+                                              beam_spacing=beam_spacing,
                                               return_theta=True)
-
-            # Extract spectra roughly a beam apart in midplane coordinates.
-            # There is some randomization here so multiple runs are required.
-
-            if beam_spacing:
-
-                # Sort the spectra into increasing PA.
-
-                idxs = np.argsort(theta)
-                spectra, theta = spectra[idxs], theta[idxs]
-
-                # Calculate the sampling rate. If beam_spacing is a float,
-                # interpret as the number of beams to resample by.
-
-                sampling = float(beam_spacing) * self.bmaj
-                sampling /= rpnts[r-1] * np.median(np.diff(theta))
-                sampling = np.floor(sampling).astype('int')
-
-                # If sampling rate is above 1, start at a random location in
-                # the array and sample at the given rate.
-
-                if sampling > 1:
-                    start = np.random.randint(0, theta.size)
-                    theta = np.concatenate([theta[start:], theta[:start]])
-                    spectra = np.vstack([spectra[start:], spectra[:start]])
-                    theta, spectra = theta[::sampling], spectra[::sampling]
-                elif self.verbose:
-                    print("WARNING: Unable to downsample the data.")
 
             # Create an ensemble instance from eddy if enough spectra (> 2).
 
@@ -254,6 +217,7 @@ class rotatedcube(imagecube):
                 continue
 
             # Check that there are some non-zero values.
+
             if np.nansum(spectra) == 0:
                 if self.verbose:
                     print("WARNING: No positive values. Skipping annulus.")
@@ -408,7 +372,7 @@ class rotatedcube(imagecube):
         - Output -
 
         coords:     A [3 x N] array where N is the number of successfully found
-                    ellipses. Each ellipse yields a (r, z, Tb) trio. Distances
+                    ellipses. Each ellipse yields a (r, z, dz) trio. Distances
                     are in [au] (coverted using the provided distance) and the
                     brightness temperature in [K].
         """
@@ -479,6 +443,7 @@ class rotatedcube(imagecube):
         ax.set_ylabel(r'Height (arcsec)')
         ax.set_xlabel(r'Radius (arcsec)')
         functions.plotscale(self.bmaj, dx=0.1, dy=0.9, ax=ax)
+        return ax
 
     def _get_emission_surface(self, data, x0, y0, inc, r_max=None):
         """Find the emission surface [r, z, dz] values."""

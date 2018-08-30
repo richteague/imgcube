@@ -9,7 +9,6 @@ import scipy.constants as sc
 from astropy.convolution import Kernel
 from astropy.convolution import convolve
 from astropy.convolution import convolve_fft
-from functions import percentiles_to_errors
 
 
 class imagecube:
@@ -179,7 +178,7 @@ class imagecube:
     def get_annulus(self, r_min, r_max, PA_min=None, PA_max=None,
                     exclude_PA=False, x0=0.0, y0=0.0, inc=0.0, PA=0.0,
                     z_type='thin', params=None, nearest=None,
-                    return_theta=True):
+                    beam_spacing=True, return_theta=True):
         """
         Return an annulus (or partial), of spectra and polar angles.
 
@@ -198,6 +197,9 @@ class imagecube:
                         By deafult assume a thin disk.
         params:         Parameters needed for the provided z_type.
         nearest:        Nearerst side of the disk for 3D disks.
+        beam_spacing:   If True, sample the annulus at beam spacing. A number
+                        can also be used in place of a bool and that factor
+                        will be used and the number of beams.
         return_theta:   If True, return the midplane polar angles of the
                         points in [radians].
 
@@ -215,20 +217,52 @@ class imagecube:
 
         # Get the mask and flatten.
 
-        dvals = self.data.copy().reshape(self.data.shape[0], -1)
+        dvals = self.data.copy()
+        if dvals.ndim == 3:
+            dvals = dvals.reshape(self.data.shape[0], -1)
+        else:
+            dvals = np.atleast_2d(dvals.flatten())
         mask = self.get_mask(r_min=r_min, r_max=r_max, PA_min=PA_min,
                              PA_max=PA_max, exclude_PA=exclude_PA, x0=x0,
                              y0=y0, inc=inc, PA=PA, z_type=z_type,
                              params=params, nearest=nearest, flat=True)
+        rvals, tvals = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA,
+                                        z_type=z_type, params=params,
+                                        nearest=nearest, flat=True)
+        dvals, rvals, tvals = dvals[:, mask].T, rvals[mask], tvals[mask]
 
-        # Calculate the polar angles if necessary.
+        # Apply the beam sampling.
+
+        if beam_spacing:
+
+            # Order the data in increase position angle.
+
+            idxs = np.argsort(tvals)
+            dvals, tvals = dvals[idxs], tvals[idxs]
+
+            # Calculate the sampling rate.
+
+            sampling = float(beam_spacing) * self.bmaj
+            sampling /= np.nanmean(rvals) * np.median(np.diff(tvals))
+            sampling = np.floor(sampling).astype('int')
+
+            # If the sampling rate is above 1, start at a random location in
+            # the array and sample at this rate, otherwise don't sample. This
+            # happens at small radii, for example.
+
+            if sampling > 1:
+                start = np.random.randint(0, tvals.size)
+                tvals = np.concatenate([tvals[start:], tvals[:start]])
+                dvals = np.vstack([dvals[start:], dvals[:start]])
+                tvals, dvals = tvals[::sampling], dvals[::sampling]
+            elif self.verbose:
+                print("WARNING: Unable to downsample the data.")
+
+        # Return the values.
 
         if return_theta:
-            tvals = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA,
-                                     z_type=z_type, params=params,
-                                     nearest=nearest, flat=True)[1]
-            return dvals[:, mask].T, tvals[mask]
-        return dvals[:, mask].T
+            return dvals, tvals
+        return dvals
 
     def disk_to_sky(self, coords, frame='polar', side='top', x0=0.0, y0=0.0,
                     inc=0.0, PA=0.0, z_type='thin', params=None,
@@ -379,9 +413,9 @@ class imagecube:
 
     def radial_profile(self, rpnts=None, rbins=None, x0=0.0, y0=0.0, inc=0.0,
                        PA=0.0, z_type='thin', nearest='north', params=None,
-                       collapse='max', statistic='mean', PA_min=None,
-                       PA_max=None, exclude_PA=False, beam_factor=False,
-                       clip_values=None):
+                       collapse='max', statistic='mean', uncertainty='stddev',
+                       PA_min=None, PA_max=None, exclude_PA=False,
+                       beam_spacing=False, clip_values=None):
         """
         Returns the azimuthally averaged intensity profile. If the data is 3D,
         then it is collapsed along the spectral axis with some function..
@@ -403,12 +437,11 @@ class imagecube:
         collapse:       Method to collapse the cube: 'max', maximum value along
                         the spectral axis; 'sum', sum along the spectral axis;
                         'int', integrated along the spectral axis.
-        statistic:      Return either the mean and standard deviation for each
-                        annulus with 'mean' or the 16th, 50th and 84th
-                        percentiles with 'percentiles'.
+        statistic:      Either 'mean' or 'median'.
+        uncertainty:    Either 'stddev' or 'percentiles'.
         PA_mask:        Only include values within [PA_min, PA_max].
         excxlude_PA:    Exclude the values within [PA_min, PA_max]
-        beam_factor:    Include the number of beams averaged over in the
+        beam_spacing:   Include the number of beams averaged over in the
                         calculation of the uncertainty.
         clip_values:    Clip values. If a single value is specified, clip all
                         absolute values below this, otherwise, if two values
@@ -416,64 +449,90 @@ class imagecube:
 
         - Output -
 
-        pnts:           Array of bin centers.
-        y:              Array of the bin means or medians.
-        dy:             Array of uncertainties in the bin.
+        x:              Array of bin centers.
+        y:              Array of the requested bin statistics.
+        dy:             Array of the requested bin uncertainties.
         """
 
-        # Collapse the data to a 2D image if necessary.
-        to_avg = self._collapse_cube(collapse).flatten()
+        # Check variables are OK.
+
+        collapse = collapse.lower()
+        if collapse not in ['max', 'sum', 'int']:
+            raise ValueError("Must choose collpase method: max, sum, int.")
+
+        statistic = statistic.lower()
+        if statistic not in ['mean', 'median']:
+            raise ValueError("Must choose statistic: mean or median.")
+
+        uncertainty = uncertainty.lower()
+        if uncertainty not in ['stddev', 'percentiles']:
+            raise ValueError("Must choose uncertainty: stddev or percentiles.")
 
         # Define the points to sample the radial profile at.
-        rbins, rpnts = self._radial_sampling(rbins=rbins, rvals=rpnts)
-        rvals = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA, z_type=z_type,
-                                 params=params, nearest=nearest)[0].flatten()
 
-        # Apply the masks.
-        mask = self.get_mask(r_min=rbins[0], r_max=rbins[-1], PA_min=PA_min,
-                             PA_max=PA_max, exclude_PA=exclude_PA, x0=x0,
-                             y0=y0, inc=inc, PA=PA, z_type=z_type,
-                             params=params, nearest=nearest).flatten()
+        rbins, x = self._radial_sampling(rbins=rbins, rvals=rpnts)
 
-        if mask.size != to_avg.size:
-            raise ValueError("Mask and data sizes do not match.")
-        if clip_values is not None:
-            clip_values = np.squeeze([clip_values])
-            if clip_values.size == 1:
-                mask *= abs(to_avg) >= clip_values
-            else:
-                mask *= np.logical_or(to_avg <= clip_values[0],
-                                      to_avg >= clip_values[1])
-        rvals, to_avg = rvals[mask], to_avg[mask]
+        # Cycle through the inner and outer radii to collapse the spectra.
 
-        # Apply the averaging.
-        ridxs = np.digitize(rvals, rbins)
-        if statistic.lower() not in ['mean', 'percentiles']:
-            raise ValueError("Must choose statistic: mean or percentiles.")
-        if statistic.lower() == 'mean':
-            y = [np.nanmean(to_avg[ridxs == r]) for r in range(1, rbins.size)]
-            dy = [np.nanstd(to_avg[ridxs == r]) for r in range(1, rbins.size)]
-            y, dy = np.squeeze(y), np.squeeze(dy)
-        else:
-            y = [np.nanpercentile(to_avg[ridxs == r], [16, 50, 84])
-                 for r in range(1, rbins.size)]
-            y = percentiles_to_errors(y)
-            y, dy = y[0], y[1:]
+        y, dy = [], []
+        for r_min, r_max in zip(rbins[:-1], rbins[1:]):
 
-        # Include the correction for the number of beams averaged over.
-        if beam_factor:
-            n_beams = 2. * np.pi * rpnts / self.bmaj
-            PA_min = -np.pi if PA_min is None else PA_min
-            PA_max = np.pi if PA_max is None else PA_max
-            if PA_min != -np.pi or PA_max != np.pi:
-                arc = (PA_max - PA_min) / 2. / np.pi
-                arc = max(0.0, min(arc, 1.0))
-                if exclude_PA:
-                    n_beams *= 1. - arc
+            # Get the annulus of points including beam sampling if needed.
+
+            spectra = self.get_annulus(r_min=r_min, r_max=r_max, PA_min=PA_min,
+                                       PA_max=PA_max, exclude_PA=exclude_PA,
+                                       x0=x0, y0=y0, inc=inc, PA=PA,
+                                       z_type=z_type, params=params,
+                                       nearest=nearest,
+                                       beam_spacing=beam_spacing,
+                                       return_theta=False)
+
+            # Collapse the (clipped) spectra if necessary.
+
+            if spectra.ndim == 2:
+                if clip_values is not None:
+                    clip_values = np.atleast_1d(clip_values)
+                    spectra = np.where(spectra >= clip_values[-1],
+                                       spectra, np.nan)
+                    if clip_values.size == 2:
+                        spectra = np.where(spectra <= clip_values[0],
+                                           spectra, np.nan)
+
+                if collapse == 'max':
+                    spectra = np.nanmax(spectra, axis=1)
+                elif collapse == 'int':
+                    spectra = np.where(np.isfinite(spectra), spectra, 0.0)
+                    spectra = np.trapz(spectra, x=self.velax, axis=1)
                 else:
-                    n_beams *= arc
-            dy /= np.sqrt(n_beams)
-        return rpnts, y, dy
+                    spectra = np.nansum(spectra, axis=1)
+
+            # Calculate the statistics.
+
+            if statistic == 'mean':
+                y += [np.nanmean(spectra)]
+            else:
+                y += [np.nanmedian(spectra)]
+
+            if uncertainty == 'stddev':
+                dy += [np.nanstd(spectra)]
+            else:
+                pcnts = np.nanpercentile(spectra, [16, 50, 84])
+                dy += [[pcnts[1] - pcnts[0], pcnts[2] - pcnts[1]]]
+
+        # Apply the beam factor inccrease in uncertainty.
+
+        y, dy = np.squeeze(y), np.squeeze(dy)
+        if beam_spacing:
+            beam = float(beam_spacing) * self.bmaj
+            try:
+                dy /= np.sqrt(2. * np.pi * x / beam)
+            except ValueError:
+                dy /= np.sqrt(2. * np.pi * x[:, None] / beam)
+                dy = dy.T
+
+        # Return the values.
+
+        return x, y, dy
 
     def _collapse_cube(self, method='max'):
         """Collapse the cube to a 2D image using the requested method."""
