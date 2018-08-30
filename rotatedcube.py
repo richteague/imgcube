@@ -16,7 +16,7 @@ from scipy.interpolate import interp1d
 class rotatedcube(imagecube):
 
     def __init__(self, path, inc=None, mstar=None, dist=None, x0=0.0, y0=0.0,
-                 clip=None, kelvin=True, verbose=True,
+                 clip=None, kelvin='RJ', verbose=True,
                  suppress_warnings=False):
         """Read in the rotated image cube."""
 
@@ -398,8 +398,8 @@ class rotatedcube(imagecube):
             clipped_data = np.where(mask, clipped_data, 0.0)
 
             # Mask all points below <Tb> - nsigma * d<Tb>.
-            r, Tb, dTb = self.radial_profile(collapse='max', beam_factor=False)
-            clip = interp1d(r, Tb - nsigma * Tb, fill_value='extrapolate')
+            r, Tb, dT = self.radial_profile(collapse='max', beam_spacing=False)
+            clip = interp1d(r, Tb - nsigma * dT, fill_value='extrapolate')
             clipped_data = np.where(self.data >= clip(rsky), clipped_data, 0.0)
 
         # Calculate the emission surface and bin appropriately.

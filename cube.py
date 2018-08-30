@@ -415,7 +415,7 @@ class imagecube:
                        PA=0.0, z_type='thin', nearest='north', params=None,
                        collapse='max', statistic='mean', uncertainty='stddev',
                        PA_min=None, PA_max=None, exclude_PA=False,
-                       beam_spacing=False, clip_values=None):
+                       beam_spacing=True, clip_values=None):
         """
         Returns the azimuthally averaged intensity profile. If the data is 3D,
         then it is collapsed along the spectral axis with some function..
