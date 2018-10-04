@@ -17,7 +17,7 @@ class imagecube:
     fwhm = 2. * np.sqrt(2 * np.log(2))
 
     def __init__(self, path, absolute=False, kelvin='RJ', clip=None,
-                 verbose=None, suppress_warnings=True):
+                 resample=0, verbose=None, suppress_warnings=True):
         """Load up an image cube."""
 
         # Suppres warnings.
@@ -32,6 +32,7 @@ class imagecube:
         self.path = os.path.expanduser(path)
         self.fname = self.path.split('/')[-1]
         self.data = np.squeeze(fits.getdata(self.path))
+        self.data = np.where(np.isfinite(self.data), self.data, 0.0)
         self.header = fits.getheader(path)
 
         # Generate the cube axes.
@@ -71,7 +72,7 @@ class imagecube:
             if self.verbose:
                 print("WARNING: Converting to Kelvin.")
             if type(kelvin) is str:
-                if kelvin.lower() == 'rj' or 'rayleigh-jeans':
+                if kelvin.lower() in ['rj', 'rayleigh-jeans']:
                     if self.verbose:
                         print("\t Using the Rayleigh-Jeans approximation.")
                     self.data = self._jybeam_to_Tb_RJ()
@@ -82,6 +83,21 @@ class imagecube:
         # Clip the clube down to a smaller field of view.
         if clip is not None:
             self._clip_cube(clip)
+
+        # Resample the data by a factor by a factor of N.
+        if resample < 0:
+            raise ValueError("'resample' must be equal to or larger than 0.")
+        elif resample > 1:
+            N = int(resample)
+            data = [np.average(self.data[i*N:(i+1)*N], axis=0)
+                    for i in range(self.data.shape[0] / N)]
+            self.data = np.squeeze(data)
+            velax = [np.average(self.velax[i*N:(i+1)*N])
+                     for i in range(self.data.shape[0])]
+            self.velax = np.squeeze(velax)
+            self.chan = np.diff(self.velax).mean()
+            if self.velax.size != self.data.shape[0]:
+                raise ValueError("Mistmatch in data and velax shapes.")
 
         return
 
@@ -243,7 +259,7 @@ class imagecube:
             # Calculate the sampling rate.
 
             sampling = float(beam_spacing) * self.bmaj
-            sampling /= np.nanmean(rvals) * np.median(np.diff(tvals))
+            sampling /= np.mean(rvals) * np.median(np.diff(tvals))
             sampling = np.floor(sampling).astype('int')
 
             # If the sampling rate is above 1, start at a random location in
@@ -362,7 +378,7 @@ class imagecube:
         """Estimate the PA of the disk."""
         mask = self.data >= np.nanpercentile(self.data, [clip])
         angles = np.where(mask, self.disk_coords()[1], np.nan)
-        return np.nanmean(np.degrees(angles))
+        return np.nanmean(np.degrees(angles)) % 360.
 
     def _rotate_coords(self, x, y, PA):
         """Rotate (x, y) by PA [deg]."""
@@ -398,9 +414,26 @@ class imagecube:
         """Return polar coordinates of surface in [arcsec, radians]."""
         x_mid, y_mid = self._get_midplane_cart_coords(x0, y0, inc, PA)
         r_mid, t_mid = self._get_midplane_polar_coords(x0, y0, inc, PA)
+
+        '''
+        y_old = y_mid
+        y_tmp = np.copy(y_mid)
+        mask = np.ones_like(y_mid, dtype=bool)
+        for _ in range(50):
+            y_tmp[mask] = y_mid[mask] - func(r_mid[mask]) * tilt * \
+                np.tan(np.radians(inc))
+            r_mid[mask] = np.hypot(y_tmp[mask], x_mid[mask])
+            t_mid[mask] = np.arctan2(y_tmp[mask], x_mid[mask])
+            mask = np.abs((y_old - y_tmp) / y_old) >= 0.05
+            if not np.any(mask):
+                break
+            y_old[mask] = y_tmp[mask]
+        '''
+
         for _ in range(5):
             y_tmp = y_mid - func(r_mid) * tilt * np.tan(np.radians(inc))
-            r_mid, t_mid = np.hypot(y_tmp, x_mid), np.arctan2(y_tmp, x_mid)
+            r_mid = np.hypot(y_tmp, x_mid)
+            t_mid = np.arctan2(y_tmp, x_mid)
         return r_mid, t_mid
 
     def _get_flared_cart_coords(self, x0, y0, inc, PA, func, tilt):
@@ -528,10 +561,7 @@ class imagecube:
                 dy /= np.sqrt(2. * np.pi * x / beam)
             except ValueError:
                 dy /= np.sqrt(2. * np.pi * x[:, None] / beam)
-                dy = dy.T
-
-        # Return the values.
-
+                dy = dy
         return x, y, dy
 
     def _collapse_cube(self, method='max'):
@@ -694,15 +724,29 @@ class imagecube:
             raise ValueError("Cannot find the eddy package.")
 
         # Set the radial sampling.
+
         rbins, rpnts = self._radial_sampling(rbins=rbins, rvals=rpnts)
 
-        # Calculate the projected velocity profile.
+        # Calculate the projected velocity profile. If mstar is provided, use
+        # an analytical keplerian profile including the emission surface. If
+        # vrot is provided, check whether it matches the class radial points,
+        # otherwise interpolate from the provided radii.
+
         if vrot is None and mstar is None:
             raise ValueError("Must specify either 'vrot' or 'mstar'.")
+
         if vrot is not None and mstar is not None:
             raise ValueError("Specify either 'vrot' or 'mstar', not both.")
+
         if vrot is not None:
-            if vrot.size != rpnts.size:
+            if vrot.ndim == 2:
+                if np.array_equal(vrot[0], rpnts):
+                    vrot = vrot[1]
+                else:
+                    from scipy.interpolate import interp1d
+                    vrot = interp1d(vrot[0], vrot[1], bounds_error=False,
+                                    fill_value='extrapolate')(rpnts)
+            elif vrot.size != rpnts.size:
                 raise ValueError("'vrot' must have same size as 'rpnts'.")
             if self.verbose:
                 print("Using the user specified rotation velocity.")
@@ -739,20 +783,17 @@ class imagecube:
     # == Rotation Functions == #
 
     def keplerian_profile(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z_type='thin',
-                          nearest='north', params=None,  mstar=1.0, r_max=None,
-                          r_min=None, dist=100., vlsr=0.0):
+                          nearest='north', params=None,  mstar=1.0, dist=100.,
+                          vlsr=0.0):
         """Return a Keplerian rotation profile (for the near side) in [m/s]."""
         rvals, tvals, zvals = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA,
                                                z_type=z_type, nearest=nearest,
                                                params=params, get_z=True,
                                                frame='polar')
         v_rot = sc.G * mstar * self.msun * np.power(rvals * dist * sc.au, 2.0)
-        v_rot /= np.power(np.hypot(rvals, zvals) * sc.au * dist, 3.0)
+        v_rot *= np.power(np.hypot(rvals, zvals) * sc.au * dist, -3.0)
         vrot = np.sqrt(v_rot) * np.cos(tvals) * np.sin(np.radians(inc)) + vlsr
-        r_min = rvals.min() if r_min is None else r_min
-        r_max = rvals.max() if r_max is None else r_max
-        mask = np.logical_and(rvals >= r_min, rvals <= r_max)
-        return np.where(mask, vrot, np.nan)
+        return vrot
 
     def keplerian_curve(self, rpnts, mstar, z_type='thin', params=None,
                         dist=100.):
@@ -906,14 +947,19 @@ class imagecube:
         # Start the mask.
         params = np.atleast_1d(params)
         mask = np.ones(self.data.shape) * self.velax[:, None, None]
+        r_min = 0.0 if r_min is None else r_min
+        r_max = 1e5 if r_max is None else r_max
         dV = self._dV_profile(x0=x0, y0=y0, inc=inc, PA=PA, z_type=z_type,
                               params=params, nearest=nearest, dV=dV, dVq=dVq)
 
         # Rotation of the front side of the disk.
         v1 = self.keplerian_profile(x0=x0, y0=y0, inc=inc, PA=PA,
                                     z_type=z_type, nearest=nearest,
-                                    params=params,  mstar=mstar, r_max=r_max,
-                                    r_min=r_min, dist=dist, vlsr=vlsr)
+                                    params=params,  mstar=mstar,
+                                    dist=dist, vlsr=vlsr)
+        rr = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA, z_type=z_type,
+                              nearest=nearest, params=params)[0]
+        v1 = np.where(np.logical_and(rr >= r_min, rr <= r_max), v1, 1e20)
         v1 = abs(mask - np.ones(self.data.shape) * v1[None, :, :])
         if z_type == 'thin' or params[0] == 0.0:
             return np.where(v1 <= dV, 1., 0.)
@@ -924,6 +970,9 @@ class imagecube:
                                     z_type=z_type, nearest=nearest,
                                     params=params,  mstar=mstar, r_max=r_max,
                                     r_min=r_min, dist=dist, vlsr=vlsr)
+        rr = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA, z_type=z_type,
+                              nearest=nearest, params=params)[0]
+        v2 = np.where(np.logical_and(rr >= r_min, rr <= r_max), v2, 1e20)
         v2 = abs(mask - np.ones(self.data.shape) * v2[None, :, :])
         return np.where(np.logical_or(v1 <= dV, v2 <= dV), 1., 0.)
 
@@ -1026,14 +1075,16 @@ class imagecube:
         Tbg = 2. * sc.h * np.power(self.nu, 3) / np.power(sc.c, 2)
         return Tbg / (np.exp(sc.h * self.nu / sc.k / Tcmb) - 1.0)
 
-    def _jybeam_to_Tb(self):
+    def _jybeam_to_Tb(self, data=None):
         """Return data converted from Jy/beam to K using full Planck law."""
-        Tb = 1e-26 * abs(self.data) / self._calculate_beam_area_str()
+        data = self.data if data is None else data
+        Tb = 1e-26 * abs(data) / self._calculate_beam_area_str()
         Tb = 2. * sc.h * np.power(self.nu, 3) / Tb / np.power(sc.c, 2)
         Tb = sc.h * self.nu / sc.k / np.log(Tb + 1.0)
-        return np.where(self.data >= 0.0, Tb, -Tb)
+        return np.where(data >= 0.0, Tb, -Tb)
 
-    def _jybeam_to_Tb_RJ(self):
+    def _jybeam_to_Tb_RJ(self, data=None):
         """Jy/beam to K conversion."""
+        data = self.data if data is None else data
         jy2k = 1e-26 * sc.c**2 / self.nu**2 / 2. / sc.k
-        return jy2k * self.data / self._calculate_beam_area_str()
+        return jy2k * data / self._calculate_beam_area_str()

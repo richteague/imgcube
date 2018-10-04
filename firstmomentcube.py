@@ -10,38 +10,32 @@ from cube import imagecube
 class firstmomentcube(imagecube):
 
     def __init__(self, path, mstar=None, inc=None, dist=None, vlsr=None,
-                 clip=None, collapse='max', excludepix=None, verbose=True,
-                 suppress_warnings=True):
+                 resample=0, clip=None, collapse='quadratic', excludepix=None,
+                 verbose=True, suppress_warnings=True, error=None):
         """Read in the first moment map."""
-        imagecube.__init__(self, path, absolute=False, kelvin=False, clip=clip,
-                           verbose=verbose,
+
+        # Base class.
+        imagecube.__init__(self, path, absolute=False, resample=resample,
+                           kelvin=False, clip=clip, verbose=verbose,
                            suppress_warnings=suppress_warnings)
 
         # Collapse the cube if necessary.
         if self.data.ndim == 3:
-            if collapse.lower() not in ['ninth', 'first']:
-                raise ValueError("collapse method must be 'ninth' or 'first'.")
-            if self.verbose:
-                print("WARNING: Collapsing the cube using %s." % collapse)
-
-            # Apply the masking.
             self.data = np.where(np.isfinite(self.data), self.data, 0.0)
             if excludepix is not None:
                 pix = np.atleast_1d(excludepix)
-                if excludepix.size == 1:
+                if pix.size == 1:
                     mask = self.data >= pix[0]
-                elif excludepix.size == 2:
-                    mask = np.logical_and(self.data >= pix[0],
-                                          self.data <= pix[1])
+                elif pix.size == 2:
+                    mask = np.logical_and(self.data <= pix[0],
+                                          self.data >= pix[1])
                 self.data = np.where(mask, self.data, 0.0)
-
-            # Collapse the cube and convert to [km/s].
-            if collapse.lower() == 'ninth':
-                self.data = np.take(self.velax, np.argmax(self.data, axis=0))
-            else:
-                temp = self.velax[:, None, None] * np.ones(self.data.shape)
-                self.data = np.average(temp, axis=0, weights=self.data)
-            self.data /= 1e3
+            self.data, self.error = self._collapse_cube(method=collapse)
+        else:
+            if error is None and self.verbose:
+                print("WARNING: No error specified. Assuming 0.1 km/s.")
+            self.error = error if error is not None else 0.1
+        self.error = np.where(np.isfinite(self.error), self.error, 1e10)
 
         # Populate the parameters.
         if mstar is None:
@@ -61,13 +55,95 @@ class firstmomentcube(imagecube):
         else:
             self.vlsr = vlsr
             if self.vlsr > 1e3:
-                print("WARNING: systemic velocity in [m/s], not [km/s].")
+                ("WARNING: systemic velocity in [m/s], not [km/s].")
+
+    def optimized_keplerian(self, p0=None, fit_mstar=True, beam=True,
+                            r_min=None, r_max=None, z_type='thin',
+                            nearest=None, optimize=True,
+                            Ninner=10, Nouter=3, step=1e-5, **kwargs):
+        """
+        Return [p0, theta_fixed, error] which maximize likelihood. This is done
+        through several iterations (specified by Ninner and Npouter) of
+        scipy.minimize where the parameters which are minimized are alternated.
+        This should provide a quicker (and better) estimate for the parameters.
+        """
+
+        # Check the input parameters.
+        z_type = z_type.lower()
+        if z_type not in ['thin', 'conical', 'flared']:
+            raise ValueError("Can only fit 'thin', 'conical' or 'flared'.")
+        theta_fixed = self.inc if fit_mstar else self.mstar
+
+        # Warning about the bounds.
+        r_min = 0.0 if r_min is None else r_min
+        if r_max is None and self.verbose:
+            print("WARNING: No r_max specified which may cause trouble.")
+        r_max = np.inf if r_max is None else r_max
+
+        # Make sure there are errors
+        if self.verbose and self.error is None:
+            print("WARNING: No error specified. Assuming 0.1 km/s.")
+        error = 0.1 if self.error is None else self.error
+        ivar = np.ones(self.data.shape) / error**2
+        if ivar.shape != self.data.shape:
+            raise ValueError("Inverse variance doesn't match data.shape.")
+
+        # Find the starting positions.
+        if p0 is None:
+            if self.verbose:
+                print("WARNING: Estimating starting values. May not work.")
+            free_theta = self.mstar if fit_mstar else self.inc
+            p0 = [0.0, 0.0, free_theta, self._estimate_PA(),
+                  np.nanmedian(self.data) * 1e3]
+            if z_type == 'conical':
+                p0 += [8.0]
+                if nearest is None:
+                    p0 += [0.0]
+            elif z_type == 'flared':
+                p0 += [0.3, 1.25]
+                if nearest is None:
+                    p0 += [0.0]
+            if self.verbose:
+                print("Have chosen:", p0)
+
+        # Calculate the inverse variance.
+        self.ivar = np.power(self.error, -2.0)
+        rvals = self.disk_coords(p0[0], p0[1], self.inc, p0[3])[0]
+        mask = np.logical_and(rvals >= r_min, rvals <= r_max)
+        self.ivar[~mask] = 0.0
+
+        # Find optimal starting positions.
+        if optimize:
+            from scipy.optimize import minimize
+
+            def nlnL(theta):
+                """Negative loglikelihood."""
+                return -self._lnprobability(theta, theta_fixed, fit_mstar,
+                                            beam, r_min, r_max, z_type,
+                                            nearest)
+            res = minimize(nlnL, x0=p0, method="Nelder-Mead",
+                           options={'maxiter': 100000})
+            if res.success:
+                p0 = res.x
+            elif self.verbose:
+                print("WARNING: scipy.optimize did not converge.")
+        elif self.verbose:
+            print("No optimization calls requested.")
+
+        # Update the mask.
+        self.ivar = np.power(self.error, -2.0)
+        rvals = self.disk_coords(p0[0], p0[1], self.inc, p0[3])[0]
+        mask = np.logical_and(rvals >= r_min, rvals <= r_max)
+        self.ivar[~mask] = 0.0
+
+        return p0, theta_fixed
 
     def fit_keplerian(self, p0=None, fit_mstar=True, beam=True, r_min=None,
                       r_max=None, z_type='thin', nearest=None, nwalkers=None,
-                      nburnin=300, nsteps=300, scatter=1e-2, error=None,
+                      nburnin=300, nsteps=300, scatter=1e-2,
                       plot_walkers=True, plot_corner=True, plot_bestfit=True,
-                      return_samples=False, return_sampler=False):
+                      plot_residual=True, return_samples=False,
+                      return_sampler=False, optimize=True, **kwargs):
         """
         Fit a Keplerian rotation profile to a first or ninth moment map. Using
         a ninth moment map is better as it will be less contaminated from the
@@ -131,34 +207,27 @@ class firstmomentcube(imagecube):
         except:
             raise ValueError("Cannot find emcee.")
 
-        # Check the input parameters.
-        z_type = z_type.lower()
-        if z_type not in ['thin', 'conical', 'flared']:
-            raise ValueError("Can only fit 'thin', 'conical' or 'flared'.")
-
-        # Warning about the bounds.
-        if r_max is None and self.verbose:
-            print("WARNING: No r_max specified which may cause trouble.")
-
-        # Find the starting positions.
-        if p0 is None:
-            if self.verbose:
-                print("WARNING: Estimating starting values. May not work.")
-            free_theta = self.mstar if fit_mstar else self.inc
-            p0 = [0.0, 0.0, free_theta, self._estimate_PA(), self.vlsr * 1e3]
-            if z_type == 'conical':
-                p0 += [8.0]
-                if nearest is None:
-                    p0 += [0.0]
-            elif z_type == 'flared':
-                p0 += [0.3, 1.25]
-                if nearest is None:
-                    p0 += [0.0]
-            if self.verbose:
-                print("Have chosen:", p0)
+        # Find the parameters which maximize the likelihood.
+        p0, theta_fixed = self.optimized_keplerian(
+            p0=p0, fit_mstar=fit_mstar, beam=beam, r_min=r_min, r_max=r_max,
+            z_type=z_type, nearest=nearest, optimize=optimize
+            )
+        if self.verbose:
+            print("Starting positions:")
+            print(p0)
         ndim = len(p0)
         nwalkers = 2 * ndim if nwalkers is None else nwalkers
-        p0 = self._random_p0(np.squeeze(p0), scatter, nwalkers)
+        init = np.squeeze(p0)
+        p0 = self._random_p0(init, scatter, nwalkers)
+
+        # Make sure all starting positions are valid.
+        args = (theta_fixed, fit_mstar, beam, r_min, r_max, z_type, nearest)
+        mask = np.ones(len(p0), dtype=bool)
+        lp = np.empty(len(p0))
+        while np.any(mask):
+            p0[mask] = self._random_p0(init, scatter, mask.sum())
+            lp[mask] = [self._lnprobability(p00, *args) for p00 in p0[mask]]
+            mask = ~np.isfinite(lp)
 
         # Define the labels.
         labels = [r'$x_0$', r'$y_0$', r'$M_{\star}$' if fit_mstar else r'$i$',
@@ -171,24 +240,13 @@ class firstmomentcube(imagecube):
             labels += [r'${\rm tilt}$']
         assert len(labels) == ndim, "Mismatch in p0 and labels."
 
-        # Make sure there are errors
-        if self.verbose and error is None:
-            print("WARNING: No error specified. Assuming 0.1 km/s.")
-        error = 0.1 if error is None else error
-        error = np.ones(self.data.shape) * error
-        if error.shape != self.data.shape:
-            raise ValueError("RMS doesn't match data.shape.")
-
         # Run the MCMC.
-        theta_fixed = self.inc if fit_mstar else self.mstar
         sampler = emcee.EnsembleSampler(nwalkers, ndim, self._lnprobability,
-                                        args=(theta_fixed, fit_mstar, error,
-                                              beam, r_min, r_max, z_type,
-                                              nearest))
+                                        args=args)
         sampler.run_mcmc(p0, nburnin + nsteps)
         samples = sampler.chain[:, -int(nsteps):]
         samples = samples.reshape(-1, samples.shape[-1])
-        samples[:, 3] = (samples[:, 3] + 360.) % 360.
+        samples[:, 3] = samples[:, 3] % 360.
 
         # Plotting here.
         if plot_walkers:
@@ -196,8 +254,11 @@ class firstmomentcube(imagecube):
         if plot_corner:
             functions.plot_corner(samples, labels)
         if plot_bestfit:
-            self._plot_bestfit(samples, theta_fixed, fit_mstar, error, beam,
+            self._plot_bestfit(samples, theta_fixed, fit_mstar, beam,
                                r_min, r_max, z_type, nearest)
+        if plot_residual:
+            self._plot_bestfit(samples, theta_fixed, fit_mstar, beam,
+                               r_min, r_max, z_type, nearest, residual=True)
 
         # Return the fits.
         if return_sampler:
@@ -208,7 +269,7 @@ class firstmomentcube(imagecube):
 
     # == emcee Functions == #
 
-    def _lnprobability(self, theta, theta_fixed, fit_mstar, error, beam, r_min,
+    def _lnprobability(self, theta, theta_fixed, fit_mstar, beam, r_min,
                        r_max, z_type, nearest):
         """Log-likelihood function for a thin disk."""
 
@@ -266,17 +327,13 @@ class firstmomentcube(imagecube):
             params = None
 
         # Make the (convolved) model.
-
         vkep = self._get_model(x0=x0, y0=y0, inc=inc, PA=PA, vlsr=vlsr,
                                mstar=mstar, z_type=z_type, params=params,
                                tilt=tilt, r_min=r_min, r_max=r_max, beam=beam)
 
         # Calculate chi-squared and return.
-
-        mask = np.logical_and(np.isfinite(self.data), np.isfinite(vkep))
-        lnx2 = np.power((self.data[mask] - vkep[mask]) / error[mask], 2)
-        lnx2 -= np.log(error[mask]**2 * np.sqrt(2 * np.pi))
-        lnx2 = -0.5 * np.nansum(lnx2)
+        lnx2 = np.power((self.data - vkep), 2) * self.ivar
+        lnx2 = -0.5 * np.sum(lnx2)
         return lnx2 if np.isfinite(lnx2) else -np.inf
 
     def _get_model(self, x0, y0, inc, PA, vlsr, mstar, z_type, params, tilt,
@@ -285,13 +342,10 @@ class firstmomentcube(imagecube):
         nearest = 'north' if tilt >= 0 else 'south'
         vkep = self.keplerian_profile(x0=x0, y0=y0, inc=inc, PA=PA, vlsr=vlsr,
                                       mstar=mstar, z_type=z_type,
-                                      params=params, r_min=r_min, r_max=r_max,
+                                      dist=self.dist, params=params,
                                       nearest=nearest)
         if beam:
-            mask = np.isfinite(vkep)
-            vkep = self._convolve_image(vkep / 1e3, self._beamkernel())
-            vkep = np.where(mask, vkep, np.nan)
-            return vkep
+            vkep = self._convolve_image(vkep, self._beamkernel())
         return vkep / 1e3
 
     def _random_p0(self, p0, scatter, nwalkers):
@@ -301,13 +355,57 @@ class firstmomentcube(imagecube):
         dp0 = np.where(p0 == 0.0, 1.0, p0)[None, :] * (1.0 + scatter * dp0)
         return np.where(p0[None, :] == 0.0, dp0 - 1.0, dp0)
 
+    # == Collapsing Functions == #
+
+    def _collapse_cube(self, method='ninth', clip=None):
+        """
+        Collapse the cube based on the method:
+        first / average : Intensity weighted average velocity.
+        ninth / max     : Velocity of the peak pixel in each spectrum.
+        quadratic       : Parabolic fit to the pixel and neighbouring pixels.
+        """
+
+        if method == 'first' or method == 'average':
+            vlos, uncertainty = self._collapse_cube_first()
+        elif method == 'ninth' or method == 'max':
+            vlos, uncertainty = self._collapse_cube_ninth()
+        elif method == 'quadratic':
+            vlos, uncertainty = self._collapse_cube_quad()
+        return vlos, uncertainty
+
+    def _collapse_cube_first(self):
+        """Traditional first moment map."""
+        vel = self.velax[:, None, None] * np.ones(self.data.shape)
+        weights = 1e-10 * np.random.random(vel.size).reshape(vel.shape)
+        weights = np.where(self.data != 0.0, self.data, weights)
+        vlos = np.average(vel, axis=0, weights=weights)
+        uncertainty = np.ones(vlos.shape) * self.chan
+        return vlos / 1e3, uncertainty / 1e3
+
+    def _collapse_cube_ninth(self):
+        """Velocity coordinate of maximum velocity."""
+        vlos = np.take(self.velax, np.argmax(self.data, axis=0))
+        uncertainty = np.ones(vlos.shape) * self.chan
+        return vlos / 1e3, uncertainty / 1e3
+
+    def _collapse_cube_quad(self):
+        """Parabolic fit to the pixel of peak intensity."""
+        from bettermoments import quadratic
+        rms = np.nanstd([self.data[:5], self.data[-5:]])
+        vlos, uncertainty = quadratic(self.data, x0=self.velax[0],
+                                      dx=self.chan, uncertainty=rms)[:2]
+        return vlos / 1e3, uncertainty / 1e3
+
     # == Plotting Functions == #
 
-    def _plot_bestfit(self, samples, theta_fixed, fit_mstar, error, beam,
-                      r_min, r_max, z_type, nearest):
+    def _plot_bestfit(self, samples, theta_fixed, fit_mstar, beam,
+                      r_min, r_max, z_type, nearest, residual=False):
         """Plot the best fit moment map."""
 
-        theta = np.median(samples, axis=0)
+        if samples.ndim == 2:
+            theta = np.median(samples, axis=0)
+        else:
+            theta = samples
 
         x0, y0 = theta[0], theta[1]
         if fit_mstar:
@@ -333,12 +431,25 @@ class firstmomentcube(imagecube):
                                 mstar=mstar, z_type=z_type, params=params,
                                 tilt=tilt, r_min=r_min, r_max=r_max, beam=beam)
 
+        if residual:
+            model -= self.data
+            levels = np.nanpercentile(model, [10, 90])
+            levels = max(abs(levels[0]), abs(levels[1]))
+            levels = np.array([-levels, levels])
+            ticks = None
+        else:
+            levels = np.nanpercentile(self.data, [2, 98])
+            ticks = np.arange(-20, 20)
+
         import matplotlib.cm as cm
         import matplotlib.pyplot as plt
 
         fig, ax = plt.subplots()
-        im = ax.contourf(self.xaxis, self.yaxis, model, 30, cmap=cm.bwr)
-        cb = plt.colorbar(im, pad=0.02, ticks=np.arange(-20, 20))
+        levels = np.linspace(levels[0], levels[1], 30)
+        im = ax.contourf(self.xaxis, self.yaxis, model,
+                         levels, cmap=cm.RdBu_r, extend='both')
+        ax.contour(self.xaxis, self.yaxis, self.ivar, [0], colors='k')
+        cb = plt.colorbar(im, pad=0.02, ticks=ticks)
         cb.set_label('Line of Sight Velocity (km/s)', rotation=270,
                      labelpad=15)
         ax.set_aspect(1)
@@ -356,52 +467,7 @@ class firstmomentcube(imagecube):
             from functions import plotbeam
             plotbeam(bmaj=self.bmaj, bmin=self.bmin, bpa=self.bpa, ax=ax)
 
-    def _plot_residual(self, samples, theta_fixed, fit_Mstar, beam, r_min=None,
-                       r_max=None):
-        """Plot the residuals for the best fit model."""
-        import matplotlib.cm as cm
-        import matplotlib.pyplot as plt
-        median = np.median(samples, axis=0)
-        model = self._get_masked_model(theta=median,
-                                       theta_fixed=theta_fixed,
-                                       fit_Mstar=fit_Mstar, beam=beam,
-                                       r_min=r_min, r_max=r_max)
-
-        # Find the bounds of the model.
-        residual = (self.data - model)
-        residual /= np.sign(self.data - median[-1] / 1e3)
-        vmax = min(np.nanmax(abs(residual)), 0.5)
-        vmin = -vmax
-        tick = np.floor(vmax * 10. / 2.5) / 10.
-        tick = np.arange(np.floor(vmin * tick) / tick, vmax+1, tick)
-
-        # Plot the figure.
-        fig, ax = plt.subplots()
-        im = ax.contourf(self.xaxis - median[0], self.yaxis - median[1],
-                         residual, levels=np.linspace(vmin, vmax, 30),
-                         cmap=cm.RdBu_r, extend='both', vmin=vmin, vmax=vmax)
-        cb = plt.colorbar(im, pad=0.02, ticks=tick)
-        cb.set_label(r'${\rm Obsevations - Model \quad (km\,s^{-1})}$',
-                     rotation=270, labelpad=15)
-
-        # Plot the disk center.
-        ax.scatter(0.0, 0.0, color='k', marker='x')
-
-        # Set up the axes.
-        ax.set_aspect(1)
-        ax.grid(ls=':', color='k', alpha=0.3)
-        if r_max is None:
-            ax.set_xlim(self.xaxis.max(), self.xaxis.min())
-            ax.set_ylim(self.yaxis.min(), self.yaxis.max())
-        else:
-            ax.set_xlim(1.1 * r_max, -1.1 * r_max)
-            ax.set_ylim(-1.1 * r_max, 1.1 * r_max)
-        ax.set_xlabel('Offset (arcsec)')
-        ax.set_ylabel('Offset (arcsec)')
-
-        if beam:
-            from functions import plotbeam
-            plotbeam(bmaj=self.bmaj, bmin=self.bmin, bpa=self.bpa, ax=ax)
+        return model
 
     def plot_first_moment(self, ax=None, levels=None):
         """Plot the first moment map."""
@@ -417,6 +483,27 @@ class firstmomentcube(imagecube):
                          cmap=cm.RdBu_r, extend='both')
         cb = plt.colorbar(im, pad=0.02, ticks=np.arange(10))
         cb.set_label('Line of Sight Velocity (km/s)', rotation=270,
+                     labelpad=15)
+        ax.set_aspect(1)
+        ax.grid(ls=':', color='k', alpha=0.3)
+        ax.set_xlim(self.xaxis.max(), self.xaxis.min())
+        ax.set_ylim(self.yaxis.min(), self.yaxis.max())
+        ax.set_xlabel('Offset (arcsec)')
+        ax.set_ylabel('Offset (arcsec)')
+        plotbeam(bmaj=self.bmaj, bmin=self.bmin, bpa=self.bpa, ax=ax)
+
+    def plot_uncertainties(self, ax=None, levels=None):
+        import matplotlib.cm as cm
+        from functions import plotbeam
+        import matplotlib.pyplot as plt
+        if ax is None:
+            fig, ax = plt.subplots()
+        if levels is None:
+            levels = np.arange(0, 2.1, 0.05)
+        im = ax.contourf(self.xaxis, self.yaxis, self.error, levels,
+                         cmap=cm.RdBu_r, extend='both')
+        cb = plt.colorbar(im, pad=0.02, ticks=np.arange(0, 2.1, 0.1))
+        cb.set_label('Uncertainty (km/s)', rotation=270,
                      labelpad=15)
         ax.set_aspect(1)
         ax.grid(ls=':', color='k', alpha=0.3)

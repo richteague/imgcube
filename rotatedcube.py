@@ -51,77 +51,6 @@ class rotatedcube(imagecube):
 
         return
 
-    # == Spectral Deprojection == #
-
-    def get_deprojected_spectra(self, vrot, rbins=None, rpnts=None,
-                                include_height=True, method='bin', PA_min=None,
-                                PA_max=None, exclude_PA=False):
-        """
-        Return the deprojected spectra using the provided rotation profile.
-        """
-
-        # Populate variables.
-
-        try:
-            from eddy.eddy import ensemble
-        except:
-            raise ValueError("Cannot find the eddy package.")
-
-        if method.lower() not in ['bin', 'gp', 'raw']:
-            raise ValueError("Method must be ['bin', 'GP', 'raw']")
-
-        # Deprojected pixel coordinates.
-
-        rvals, tvals = self.disk_coords(self.x0, self.y0, self.inc,
-                                        z_type='func',
-                                        params=self.emission_surface,
-                                        nearest=self.nearest)
-        rvals, tvals = rvals.flatten(), tvals.flatten()
-        if rbins is None and rvals is None and self.verbose:
-            print("WARNING: No radial sampling set, this will take a while.")
-        rbins, rpnts = self._radial_sampling(rbins=rbins, rvals=rpnts)
-        if rpnts.size != vrot.size:
-            raise ValueError("Wrong number of rotation velocities (vrot).")
-
-        # Flatten the data to [velocity, nxpix * nypix].
-
-        dvals = self.data.copy().reshape(self.data.shape[0], -1)
-        if dvals.shape != (self.velax.size, self.nxpix * self.nypix):
-            raise ValueError("Wrong data shape.")
-
-        # Deproject the spectra.
-
-        deprojected = []
-        for r in range(1, rbins.size):
-
-            # Get spectra and deproject.
-
-            mask = self.get_mask(r_min=rbins[r-1], r_max=rbins[r],
-                                 PA_min=PA_min, PA_max=PA_max,
-                                 exclude_PA=exclude_PA, x0=self.x0, y0=self.y0,
-                                 inc=self.inc, z_type='func',
-                                 params=self.emission_surface,
-                                 nearest=self.nearest).flatten()
-            spectra, theta = dvals[:, mask].T, tvals[mask]
-            annulus = ensemble(spectra=spectra, theta=theta, velax=self.velax,
-                               suppres_warnings=0 if self.verbose else 1)
-
-            # Collapse to a single spectrum.
-
-            if method == 'bin':
-                deprojected += [annulus.deprojected_spectrum(vrot)]
-            else:
-                spectra = annulus.deprojecrted_spectra(vrot)
-                noise = np.nanstd(self.data[0]) * np.ones(spectra.shape)
-                velax = self.velax[None, :] * np.ones(spectra.shape)
-                x, y, _ = functions.Matern32_model(velax.flatten(),
-                                                   spectra.flatten(),
-                                                   noise.flatten(),
-                                                   oversample=False)
-                deprojected += [interp1d(x, y, bounds_error=False,
-                                fill_value='extrapolate')(self.velax)]
-        return np.squeeze(deprojected)
-
     # == Rotation Profiles == #
 
     def get_rotation_profile(self, rbins=None, rpnts=None, resample=True,
@@ -169,7 +98,7 @@ class rotatedcube(imagecube):
         # Populate variables.
 
         try:
-            from eddy.eddy import ensemble
+            from eddy.annulus import ensemble
         except:
             raise ValueError("Cannot find the eddy package.")
         if method.lower() not in ['dv', 'gp']:
