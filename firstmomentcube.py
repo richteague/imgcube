@@ -36,6 +36,7 @@ class firstmomentcube(imagecube):
             if error is None and self.verbose:
                 print("WARNING: No error specified. Assuming 0.1 km/s.")
             self.error = error if error is not None else 0.1
+            self.error = self.error * np.ones(self.data.shape)
 
         # Populate the parameters.
         if mstar is None:
@@ -254,13 +255,13 @@ class firstmomentcube(imagecube):
         bounds[4] = (self.vlsr * 1e3 - 1e3, self.vlsr * 1e3 + 1e3)
 
         res = minimize(nlnL, x0=p0, method='TNC', bounds=bounds,
-                       options={'maxiter': 100000, 'ftol': 1e-5})
+                       options={'maxiter': 100000, 'ftol': 1e-3})
         p0 = res.x
         p0[3] = p0[3] % 360.
 
         if res.success:
             print("Optimized starting positions:")
-            print(p0)
+            print(['%.2e' % p for p in p0])
         elif self.verbose:
             print("WARNING: scipy.optimize did not converge.")
             print("\t Paramaters may not be optical.\n")

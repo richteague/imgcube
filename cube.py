@@ -1088,3 +1088,11 @@ class imagecube:
         data = self.data if data is None else data
         jy2k = 1e-26 * sc.c**2 / self.nu**2 / 2. / sc.k
         return jy2k * data / self._calculate_beam_area_str()
+
+    def _Tb_to_jybeam(self, data=None):
+        """K to Jy/beam conversion."""
+        data = self.data if data is None else data
+        Fv = 2. * sc.h * np.power(self.nu, 3) * np.power(sc.c, -2)
+        Fv /= np.exp(sc.h * self.nu / sc.k / abs(data)) - 1.0
+        Fv *= self._calculate_beam_area_str() / 1e-26
+        return np.where(data >= 0.0, Fv, -Fv)

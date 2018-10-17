@@ -165,6 +165,9 @@ class rotatedcube(imagecube):
             if method.lower() == 'dv':
                 v_rot += [annulus.get_vrot_dV(vref=v_kep)]
             else:
+                kwargs['return_all'] = True
+                kwargs['plot_walkers'] = False
+                kwargs['plot_corner'] = False
                 try:
                     v_rot += [annulus.get_vrot_GP(vref=v_kep, **kwargs)]
                 except:
