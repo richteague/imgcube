@@ -546,8 +546,12 @@ class firstmomentcube(imagecube):
                          levels, cmap=cm.RdBu_r, extend='both')
         ax.contour(self.xaxis, self.yaxis, self.ivar, [0], colors='k')
         cb = plt.colorbar(im, pad=0.02, ticks=ticks)
-        cb.set_label('Line of Sight Velocity (km/s)', rotation=270,
-                     labelpad=15)
+        if residual:
+            cb.set_label('Velocity Residual (m/s)', rotation=270,
+                         labelpad=15)
+        else:
+            cb.set_label('Line of Sight Velocity (km/s)', rotation=270,
+                         labelpad=15)
         ax.set_aspect(1)
         ax.grid(ls=':', color='k', alpha=0.3)
         ax.set_xlim(self.xaxis.max(), self.xaxis.min())
