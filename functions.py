@@ -232,14 +232,14 @@ def Matern32_model(x, y, dy, fit_mean=True, jitter=True, oversample=True,
 
     if soln.success:
         if verbose:
-            print 'Solution:', soln.x
+            print('Solution:', soln.x)
         yy = gp.predict(y, xx, return_cov=False, return_var=return_var)
         if return_var:
             return xx, yy[0], yy[1]**0.5
         return xx, yy
     else:
         if verbose:
-            print 'No Solution.'
+            print('No Solution.')
         if return_var:
             return x, y, np.zeros(x.size)
         return x, y

@@ -2,9 +2,10 @@
 Class for fitting the first moment maps.
 """
 
-import functions
+import time
+from imgcube import functions
 import numpy as np
-from cube import imagecube
+from imgcube.cube import imagecube
 
 
 class firstmomentcube(imagecube):
@@ -59,13 +60,13 @@ class firstmomentcube(imagecube):
                 print("WARNING: Converting VLSR in [m/s] to [km/s].")
                 self.vlsr *= 1e-3
 
-        # Calculate the uncertainties.
+        # Calculate the uncertainties and set the inverse variance.
         self.error = np.where(np.isfinite(self.error), self.error, 1e10)
-        self.ivar = self._calculate_ivar([0.0, 0.0, 0.0, 0.0])
+        self.ivar = self._calculate_ivar()
 
     def fit_keplerian(self, p0=None, fit_mstar=True, beam=True, r_min=None,
                       r_max=None, z_type='thin', nearest=None, nwalkers=None,
-                      nburnin=300, nsteps=300, scatter=1e-2,
+                      nburnin=300, nsteps=300, scatter=1e-2, both=False,
                       plot_walkers=True, plot_corner=True, plot_bestfit=True,
                       plot_residual=True, return_samples=False,
                       return_sampler=False, optimize=True, **kwargs):
@@ -135,13 +136,55 @@ class firstmomentcube(imagecube):
         # Initial starting positions.
         p0, theta_fixed = self._guess_p0(p0=p0, fit_mstar=fit_mstar,
                                          z_type=z_type, nearest=nearest)
-        self.ivar = self._calculate_ivar(p0=p0, r_min=r_min, r_max=r_max)
+
+        # Initialize the inverse variance mask.
+        if z_type == 'thin':
+            params = None
+            nearest_temp = 'north'
+        elif z_type == 'conical' and nearest is None:
+            params = [p0[-2]]
+            nearest_temp = 'south' if p0[-1] < 0.0 else 'north'
+        elif z_type == 'conical':
+            params = [p0[-1]]
+            nearest_temp = nearest
+        elif z_type == 'flared' and nearest is None:
+            params = [p0[-3], p0[-2]]
+            nearest_temp = 'south' if p0[-1] < 0.0 else 'north'
+        else:
+            params = [p0[-2], p0[-1]]
+            nearest_temp = nearest
+        self.ivar = self._calculate_ivar(x0=p0[0], y0=p0[1], PA=p0[3],
+                                         inc=self.inc if fit_mstar else p0[2],
+                                         r_min=r_min, r_max=r_max,
+                                         z_type=z_type, params=params,
+                                         nearest=nearest_temp)
 
         # Optimize positions if requested.
-        args = (theta_fixed, fit_mstar, beam, z_type, nearest)
+        args = (theta_fixed, fit_mstar, beam, z_type, nearest, r_max, both)
         if optimize:
             p0 = self._optimize_p0(p0, *args)
-            self.ivar = self._calculate_ivar(p0=p0, r_min=r_min, r_max=r_max)
+
+            # Initialize the inverse variance mask.
+            if z_type == 'thin':
+                params = None
+            elif z_type == 'conical' and nearest is None:
+                params = [p0[-2]]
+                nearest_temp = 'south' if p0[-1] < 0.0 else 'north'
+            elif z_type == 'conical':
+                params = [p0[-1]]
+                nearest_temp = nearest
+            elif z_type == 'flared' and nearest is None:
+                params = [p0[-3], p0[-2]]
+                nearest_temp = 'south' if p0[-1] < 0.0 else 'north'
+            else:
+                params = [p0[-2], p0[-1]]
+                nearest_temp = nearest
+            inc = self.inc if fit_mstar else p0[2]
+            self.ivar = self._calculate_ivar(x0=p0[0], y0=p0[1], PA=p0[3],
+                                             inc=inc, r_min=r_min, r_max=r_max,
+                                             z_type=z_type, params=params,
+                                             nearest=nearest_temp)
+
         elif self.verbose:
             print("No optimization calls requested.")
 
@@ -154,7 +197,9 @@ class firstmomentcube(imagecube):
         # Make sure all starting positions are valid.
         mask = np.ones(len(p0), dtype=bool)
         lp = np.empty(len(p0))
-        while np.any(mask):
+
+        t0 = time.time()
+        while np.any(mask) and time.time() - t0 < 5.0:
             p0[mask] = self._random_p0(init, scatter, mask.sum())
             lp[mask] = [self._lnprobability(p00, *args) for p00 in p0[mask]]
             mask = ~np.isfinite(lp)
@@ -186,10 +231,11 @@ class firstmomentcube(imagecube):
             functions.plot_corner(samples, labels)
         if plot_bestfit:
             self._plot_bestfit(samples, theta_fixed, fit_mstar, beam,
-                               z_type, nearest)
+                               z_type, nearest, both=both, r_max=r_max)
         if plot_residual:
             self._plot_bestfit(samples, theta_fixed, fit_mstar, beam,
-                               z_type, nearest, residual=True)
+                               z_type, nearest, both=both, r_max=r_max,
+                               residual=True)
 
         # Return the fits.
         if return_sampler:
@@ -227,12 +273,16 @@ class firstmomentcube(imagecube):
                 print(p0)
         return p0, theta_fixed
 
-    def _calculate_ivar(self, p0, r_min=None, r_max=None):
+    def _calculate_ivar(self, x0=0.0, y0=0.0, inc=None, PA=0.0, r_min=None,
+                        r_max=None, z_type='thin', params=None,
+                        nearest='north'):
         """Calculate the inverse variance including radius mask."""
         ivar = np.power(self.error, -2.0)
         r_min = 0.0 if r_min is None else r_min
         r_max = np.inf if r_max is None else r_max
-        rvals = self.disk_coords(p0[0], p0[1], self.inc, p0[3])[0]
+        rvals = self.disk_coords(x0, y0, self.inc if inc is None else inc, PA,
+                                 z_type=z_type, params=params,
+                                 nearest=nearest)[0]
         mask = np.logical_and(rvals >= r_min, rvals <= r_max)
         ivar[~mask] = 0.0
         return ivar
@@ -264,14 +314,14 @@ class firstmomentcube(imagecube):
             print(['%.2e' % p for p in p0])
         elif self.verbose:
             print("WARNING: scipy.optimize did not converge.")
-            print("\t Paramaters may not be optical.\n")
-            print res
+            print("\t Paramaters may not be optimal.\n")
+            print(res)
         return p0
 
     # == emcee Functions == #
 
     def _lnprobability(self, theta, theta_fixed, fit_mstar, beam, z_type,
-                       nearest):
+                       nearest, r_max, both):
         """Log-likelihood function for a thin disk."""
 
         # Unpack the standard variables.
@@ -318,7 +368,7 @@ class firstmomentcube(imagecube):
         elif z_type == 'flared':
             aspect_ratio = theta[5]
             flaring_angle = theta[6]
-            if not 0.0 <= aspect_ratio <= 0.5:
+            if not 0.0 <= aspect_ratio <= 1.0:
                 return -np.inf
             if not 0.0 <= flaring_angle <= 2.0:
                 return -np.inf
@@ -328,9 +378,27 @@ class firstmomentcube(imagecube):
             params = None
 
         # Make the (convolved) model.
-        vkep = self._get_model(x0=x0, y0=y0, inc=inc, PA=PA, vlsr=vlsr,
-                               mstar=mstar, z_type=z_type, params=params,
-                               tilt=tilt, beam=beam)
+
+        if z_type == 'thin' or not both:
+            vkep = self._get_model(x0=x0, y0=y0, inc=inc, PA=PA, vlsr=vlsr,
+                                   mstar=mstar, z_type=z_type, params=params,
+                                   tilt=tilt, beam=beam)
+        else:
+            rfront = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA,
+                                      z_type=z_type, params=params,
+                                      nearest=nearest)[0]
+            vfront = self._get_model(x0=x0, y0=y0, inc=inc, PA=PA, vlsr=vlsr,
+                                     mstar=mstar, z_type=z_type, params=params,
+                                     tilt=tilt, beam=beam)
+            params[0] *= -1.0
+            rback = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA,
+                                     z_type=z_type, params=params,
+                                     nearest=nearest)[0]
+            vback = self._get_model(x0=x0, y0=y0, inc=inc, PA=PA, vlsr=vlsr,
+                                    mstar=mstar, z_type=z_type, params=params,
+                                    tilt=tilt, beam=beam)
+            vkep = np.where(rback <= r_max, vback, vlsr)
+            vkep = np.where(rfront <= r_max, vfront, vkep)
 
         # Calculate chi-squared and return.
         lnx2 = np.power((self.data - vkep), 2) * self.ivar
@@ -340,7 +408,7 @@ class firstmomentcube(imagecube):
     def _get_model(self, x0, y0, inc, PA, vlsr, mstar, z_type, params, tilt,
                    beam):
         """Return the Keplerian rotation model."""
-        nearest = 'north' if tilt >= 0 else 'south'
+        nearest = 'north' if tilt >= 0.0 else 'south'
         vkep = self.keplerian_profile(x0=x0, y0=y0, inc=inc, PA=PA, vlsr=vlsr,
                                       mstar=mstar, z_type=z_type,
                                       dist=self.dist, params=params,
@@ -404,7 +472,7 @@ class firstmomentcube(imagecube):
     # == Plotting Functions == #
 
     def _plot_bestfit(self, samples, theta_fixed, fit_mstar, beam, z_type,
-                      nearest, residual=False):
+                      nearest, residual=False, r_max=None, both=False):
         """Plot the best fit moment map."""
 
         if samples.ndim == 2:
@@ -432,12 +500,33 @@ class firstmomentcube(imagecube):
         else:
             params = None
 
-        model = self._get_model(x0=x0, y0=y0, inc=inc, PA=PA, vlsr=vlsr,
-                                mstar=mstar, z_type=z_type, params=params,
-                                tilt=tilt, beam=beam)
+        # Build the model.
+
+        if z_type == 'thin' or not both:
+            vkep = self._get_model(x0=x0, y0=y0, inc=inc, PA=PA, vlsr=vlsr,
+                                   mstar=mstar, z_type=z_type, params=params,
+                                   tilt=tilt, beam=beam)
+        else:
+            r_max = self.xaxis[0] if r_max is None else r_max
+            rfront = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA,
+                                      z_type=z_type, params=params,
+                                      nearest=nearest)[0]
+            vfront = self._get_model(x0=x0, y0=y0, inc=inc, PA=PA, vlsr=vlsr,
+                                     mstar=mstar, z_type=z_type, params=params,
+                                     tilt=tilt, beam=beam)
+            params[0] *= -1.0
+            rback = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA,
+                                     z_type=z_type, params=params,
+                                     nearest=nearest)[0]
+            vback = self._get_model(x0=x0, y0=y0, inc=inc, PA=PA, vlsr=vlsr,
+                                    mstar=mstar, z_type=z_type, params=params,
+                                    tilt=tilt, beam=beam)
+            vkep = np.where(rback <= r_max, vback, vlsr)
+            vkep = np.where(rfront <= r_max, vfront, vkep)
+        model = vkep
 
         if residual:
-            model -= self.data
+            model = self.data - model
             levels = np.where(self.ivar != 0.0, model, np.nan)
             levels = np.nanpercentile(levels, [2, 98])
             levels = max(abs(levels[0]), abs(levels[1]))
@@ -467,15 +556,14 @@ class firstmomentcube(imagecube):
         ax.set_ylabel('Offset (arcsec)')
 
         if beam:
-            from functions import plotbeam
-            plotbeam(bmaj=self.bmaj, bmin=self.bmin, bpa=self.bpa, ax=ax)
+            functions.plotbeam(bmaj=self.bmaj, bmin=self.bmin,
+                               bpa=self.bpa, ax=ax)
 
         return model
 
     def plot_first_moment(self, ax=None, levels=None):
         """Plot the first moment map."""
         import matplotlib.cm as cm
-        from functions import plotbeam
         import matplotlib.pyplot as plt
         if ax is None:
             fig, ax = plt.subplots()
@@ -494,11 +582,10 @@ class firstmomentcube(imagecube):
         ax.set_ylim(self.yaxis.min(), self.yaxis.max())
         ax.set_xlabel('Offset (arcsec)')
         ax.set_ylabel('Offset (arcsec)')
-        plotbeam(bmaj=self.bmaj, bmin=self.bmin, bpa=self.bpa, ax=ax)
+        functions.plotbeam(bmaj=self.bmaj, bmin=self.bmin, bpa=self.bpa, ax=ax)
 
     def plot_uncertainties(self, ax=None, levels=None):
         import matplotlib.cm as cm
-        from functions import plotbeam
         import matplotlib.pyplot as plt
         if ax is None:
             fig, ax = plt.subplots()
@@ -515,4 +602,4 @@ class firstmomentcube(imagecube):
         ax.set_ylim(self.yaxis.min(), self.yaxis.max())
         ax.set_xlabel('Offset (arcsec)')
         ax.set_ylabel('Offset (arcsec)')
-        plotbeam(bmaj=self.bmaj, bmin=self.bmin, bpa=self.bpa, ax=ax)
+        functions.plotbeam(bmaj=self.bmaj, bmin=self.bmin, bpa=self.bpa, ax=ax)

@@ -64,8 +64,10 @@ class imagecube:
             self.bpa = 0.0
             self.beamarea = self.dpix**2.0
 
-        # Convert brightness to Kelvin if appropriate. If kelvin = 'rj' then
-        # use the Rayleigh-Jeans approximation.
+        # Convert brightness to Kelvin if appropriate. If kelvin = 'RJ' then
+        # use the Rayleigh-Jeans approximation. If the approximation is not
+        # used then the non-linearity of the conversion means the noise is
+        # horrible.
         self.nu = self._readrestfreq()
         self.bunit = self.header['bunit'].lower()
         if self.bunit != 'k' and kelvin:
@@ -90,7 +92,7 @@ class imagecube:
         elif resample > 1:
             N = int(resample)
             data = [np.average(self.data[i*N:(i+1)*N], axis=0)
-                    for i in range(self.data.shape[0] / N)]
+                    for i in range(int(self.data.shape[0] / N))]
             self.data = np.squeeze(data)
             velax = [np.average(self.velax[i*N:(i+1)*N])
                      for i in range(self.data.shape[0])]
@@ -230,6 +232,8 @@ class imagecube:
 
         if z_type.lower() != 'thin' and nearest is None:
             raise ValueError("Must specify nearest side for 3D disk.")
+        elif z_type.lower() == 'thin':
+            nearest = 'north'
 
         # Get the mask and flatten.
 
@@ -414,22 +418,6 @@ class imagecube:
         """Return polar coordinates of surface in [arcsec, radians]."""
         x_mid, y_mid = self._get_midplane_cart_coords(x0, y0, inc, PA)
         r_mid, t_mid = self._get_midplane_polar_coords(x0, y0, inc, PA)
-
-        '''
-        y_old = y_mid
-        y_tmp = np.copy(y_mid)
-        mask = np.ones_like(y_mid, dtype=bool)
-        for _ in range(50):
-            y_tmp[mask] = y_mid[mask] - func(r_mid[mask]) * tilt * \
-                np.tan(np.radians(inc))
-            r_mid[mask] = np.hypot(y_tmp[mask], x_mid[mask])
-            t_mid[mask] = np.arctan2(y_tmp[mask], x_mid[mask])
-            mask = np.abs((y_old - y_tmp) / y_old) >= 0.05
-            if not np.any(mask):
-                break
-            y_old[mask] = y_tmp[mask]
-        '''
-
         for _ in range(5):
             y_tmp = y_mid - func(r_mid) * tilt * np.tan(np.radians(inc))
             r_mid = np.hypot(y_tmp, x_mid)
@@ -968,8 +956,8 @@ class imagecube:
         params[0] = -params[0]
         v2 = self.keplerian_profile(x0=x0, y0=y0, inc=inc, PA=PA,
                                     z_type=z_type, nearest=nearest,
-                                    params=params,  mstar=mstar, r_max=r_max,
-                                    r_min=r_min, dist=dist, vlsr=vlsr)
+                                    params=params,  mstar=mstar, dist=dist,
+                                    vlsr=vlsr)
         rr = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA, z_type=z_type,
                               nearest=nearest, params=params)[0]
         v2 = np.where(np.logical_and(rr >= r_min, rr <= r_max), v2, 1e20)
