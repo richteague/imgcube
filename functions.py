@@ -86,7 +86,7 @@ def plot_walkers(samples, nburnin=None, labels=None):
 def plot_corner(samples, labels=None, quantiles=[0.16, 0.5, 0.84]):
     """Plot the corner plot to check for covariances."""
     import corner
-    corner.corner(samples, labels=labels,
+    corner.corner(samples, labels=labels, title_fmt='.4f',
                   quantiles=quantiles, show_titles=True)
 
 

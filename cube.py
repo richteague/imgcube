@@ -196,7 +196,7 @@ class imagecube:
     def get_annulus(self, r_min, r_max, PA_min=None, PA_max=None,
                     exclude_PA=False, x0=0.0, y0=0.0, inc=0.0, PA=0.0,
                     z_type='thin', params=None, nearest=None,
-                    beam_spacing=True, return_theta=True):
+                    beam_spacing=True, return_theta=True, as_ensemble=False):
         """
         Return an annulus (or partial), of spectra and polar angles.
 
@@ -220,12 +220,15 @@ class imagecube:
                         will be used and the number of beams.
         return_theta:   If True, return the midplane polar angles of the
                         points in [radians].
+        as_ensemble:    Return an ensemble instance from `eddy`.
 
         - Output -
 
         spectra:        The spectra from each pixel in the annulus.
         theta:          If requested, the midplane polar angles in [radians] of
                         each of the returned spectra.
+        ensemble:       An `eddy` as_ensemble if ensemble is True.
+
         """
 
         # Check emission surface parameters.
@@ -278,8 +281,11 @@ class imagecube:
             elif self.verbose:
                 print("WARNING: Unable to downsample the data.")
 
-        # Return the values.
+        # Return the values in the requested form.
 
+        if as_ensemble:
+            from eddy.annulus import ensemble
+            return ensemble(spectra=dvals, theta=tvals, velax=self.velax)
         if return_theta:
             return dvals, tvals
         return dvals
@@ -551,6 +557,42 @@ class imagecube:
                 dy /= np.sqrt(2. * np.pi * x[:, None] / beam)
                 dy = dy
         return x, y, dy
+
+    def get_vrot(self, r_min, r_max, PA_min=None, PA_max=None,
+                 exclude_PA=False, x0=0.0, y0=0.0, inc=0.0, PA=0.0,
+                 z_type='thin', params=None, nearest=None, beam_spacing=True,
+                 method='dV', mstar=None, dist=None, **kwargs):
+        """
+        Calculate the rotation profile using the methods available with
+        eddy.
+        """
+
+        # Check that the method is appropriate.
+        if method.lower() not in ['dv', 'gp']:
+            raise ValueError("method must be 'dV' or 'GP'.")
+        method = method.lower()
+
+        # Get the annulus.
+        r_avg = np.average([r_min, r_max])
+        annulus = self.get_annulus(r_min=r_min, r_max=r_max, PA_min=PA_min,
+                                   PA_max=PA_max, exclude_PA=exclude_PA, x0=x0,
+                                   y0=y0, inc=inc, PA=PA, z_type=z_type,
+                                   params=params, nearest=nearest,
+                                   beam_spacing=beam_spacing, as_ensemble=True)
+
+        # Make a reference rotation value. If values not specified it can do
+        # this by itself but it sometimes (often) wrong.
+        if kwargs.get('vref') is None:
+            if np.logical_and(mstar is not None, dist is not None):
+                vref = self.keplerian_curve(r_avg, mstar=mstar, z_type=z_type,
+                                            params=params, dist=dist)
+                kwargs['vref'] = vref * np.sin(np.radians(inc))
+
+        # Return the fitting.
+        if method == 'gp':
+            return annulus.get_vrot_GP(**kwargs)
+        else:
+            return annulus.get_vrot_dV(**kwargs)
 
     def _collapse_cube(self, method='max'):
         """Collapse the cube to a 2D image using the requested method."""
