@@ -52,11 +52,18 @@ class imagecube:
         self.chan = np.mean(np.diff(self.velax))
         self.freqax = self._readfrequencyaxis()
 
-        # Get the beam properties of the beam.
+        # Get the beam properties of the beam. If a CASA beam table is found,
+        # take the median values. If neither is specified, assume that the
+        # pixel size is the beam size.
         try:
-            self.bmaj = self.header['bmaj'] * 3600.
-            self.bmin = self.header['bmin'] * 3600.
-            self.bpa = self.header['bpa']
+            if self.header['CASAMBM']:
+                beam = fits.open(self.path)[1].data
+                beam = np.median([b[:3] for b in beam.view()], axis=0)
+                self.bmaj, self.bmin, self.bpa = beam
+            else:
+                self.bmaj = self.header['bmaj'] * 3600.
+                self.bmin = self.header['bmin'] * 3600.
+                self.bpa = self.header['bpa']
             self.beamarea = self._calculate_beam_area_pix()
         except:
             self.bmaj = self.dpix
@@ -442,7 +449,8 @@ class imagecube:
                        PA=0.0, z_type='thin', nearest='north', params=None,
                        collapse='max', statistic='mean', uncertainty='stddev',
                        PA_min=None, PA_max=None, exclude_PA=False,
-                       beam_spacing=True, clip_values=None):
+                       beam_spacing=False, clip_values=None,
+                       poisson_errors=False):
         """
         Returns the azimuthally averaged intensity profile. If the data is 3D,
         then it is collapsed along the spectral axis with some function..
@@ -473,6 +481,7 @@ class imagecube:
         clip_values:    Clip values. If a single value is specified, clip all
                         absolute values below this, otherwise, if two values
                         are specified, clip values between these.
+        poisson_errors: If True, divide the uncertainy by sqrt(Npix).
 
         - Output -
 
@@ -551,11 +560,12 @@ class imagecube:
         y, dy = np.squeeze(y), np.squeeze(dy)
         if beam_spacing:
             beam = float(beam_spacing) * self.bmaj
-            try:
-                dy /= np.sqrt(2. * np.pi * x / beam)
-            except ValueError:
-                dy /= np.sqrt(2. * np.pi * x[:, None] / beam)
-                dy = dy
+            if poisson_errors:
+                try:
+                    dy /= np.sqrt(2. * np.pi * x / beam)
+                except ValueError:
+                    dy /= np.sqrt(2. * np.pi * x[:, None] / beam)
+                    dy = dy
         return x, y, dy
 
     def get_vrot(self, r_min, r_max, PA_min=None, PA_max=None,
