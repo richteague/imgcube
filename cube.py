@@ -56,7 +56,7 @@ class imagecube:
         # take the median values. If neither is specified, assume that the
         # pixel size is the beam size.
         try:
-            if self.header['CASAMBM']:
+            if self.header.get('CASAMBM', False):
                 beam = fits.open(self.path)[1].data
                 beam = np.median([b[:3] for b in beam.view()], axis=0)
                 self.bmaj, self.bmin, self.bpa = beam
@@ -595,8 +595,8 @@ class imagecube:
         if kwargs.get('vref') is None:
             if np.logical_and(mstar is not None, dist is not None):
                 vref = self.keplerian_curve(r_avg, mstar=mstar, z_type=z_type,
-                                            params=params, dist=dist)
-                kwargs['vref'] = vref * np.sin(np.radians(inc))
+                                            params=params, dist=dist, inc=inc)
+                kwargs['vref'] = vref
 
         # Return the fitting.
         if method == 'gp':
@@ -615,7 +615,7 @@ class imagecube:
                 to_avg = np.nansum(self.data, axis=0)
             else:
                 to_avg = np.where(np.isfinite(self.data), self.data, 0.0)
-                to_avg = np.trapz(to_avg, self.velax, axis=0)
+                to_avg = np.trapz(to_avg, dx=abs(self.chan), axis=0)
         else:
             to_avg = self.data.copy()
         return to_avg.flatten()
@@ -836,8 +836,11 @@ class imagecube:
         return vrot
 
     def keplerian_curve(self, rpnts, mstar, z_type='thin', params=None,
-                        dist=100.):
+                        dist=100., inc=None):
         """Return a Keplerian rotation profile at rpnts in [m/s]."""
+
+        # Make sure rpnts is an array.
+        rpnts = np.squeeze(rpnts)
 
         # Define the coordinates.
         if z_type.lower() not in ['thin', 'conical', 'flared']:
@@ -852,7 +855,10 @@ class imagecube:
 
         # Calculate the Keplerian rotation.
         vkep = sc.G * mstar * self.msun * np.power(r_m, 2.0)
-        return np.sqrt(vkep / np.power(np.hypot(r_m, z_m), 3.0))
+        vkep = np.sqrt(vkep / np.power(np.hypot(r_m, z_m), 3.0))
+        if inc is None:
+            return vkep
+        return vkep * np.sin(np.radians(inc))
 
     # == Functions to write a Keplerian mask for CLEANing. == #
 
@@ -1109,6 +1115,10 @@ class imagecube:
         if 'freq' in self.header['ctype3'].lower():
             return self._readspectralaxis()
         return self._readrestfreq() * (1.0 - self._readvelocityaxis() / sc.c)
+
+    def restframe_frequency(self, vlsr=0.0):
+        """Return the rest frame frequency."""
+        return self.nu * (1. - (self.velax - vlsr) / 2.998e8)
 
     def _background_Tb(self, Tcmb=2.73):
         """Return the background brightness temperature for the CMB."""
