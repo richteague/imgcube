@@ -55,6 +55,7 @@ class imagecube:
             self.data = self.data[::-1]
             self.velax = self.velax[::-1]
             self.freqax = self.freqax[::-1]
+            self.chan *= -1.0
 
         # Get the beam properties of the beam. If a CASA beam table is found,
         # take the median values. If neither is specified, assume that the
