@@ -47,10 +47,14 @@ class imagecube:
         self.dpix = np.mean([abs(np.diff(self.xaxis)),
                              abs(np.diff(self.yaxis))])
 
-        # Spectral axis.
+        # Spectral axis. Make sure velocity is increasing.
         self.velax = self._readvelocityaxis()
         self.chan = np.mean(np.diff(self.velax))
         self.freqax = self._readfrequencyaxis()
+        if self.chan < 0.0:
+            self.data = self.data[::-1]
+            self.velax = self.velax[::-1]
+            self.freqax = self.freqax[::-1]
 
         # Get the beam properties of the beam. If a CASA beam table is found,
         # take the median values. If neither is specified, assume that the
@@ -1063,12 +1067,12 @@ class imagecube:
         self.nxpix = self.xaxis.size
         self.nypix = self.yaxis.size
 
-    def _readspectralaxis(self):
+    def _readspectralaxis(self, a):
         """Returns the spectral axis in [Hz] or [m/s]."""
-        a_len = self.header['naxis3']
-        a_del = self.header['cdelt3']
-        a_pix = self.header['crpix3']
-        a_ref = self.header['crval3']
+        a_len = self.header['naxis%d' % a]
+        a_del = self.header['cdelt%d' % a]
+        a_pix = self.header['crpix%d' % a]
+        a_ref = self.header['crval%d' % a]
         return a_ref + (np.arange(a_len) - a_pix + 1.0) * a_del
 
     def _readpositionaxis(self, a=1):
@@ -1102,18 +1106,20 @@ class imagecube:
 
     def _readvelocityaxis(self):
         """Wrapper for _velocityaxis and _spectralaxis."""
-        if 'freq' in self.header['ctype3'].lower():
-            specax = self._readspectralaxis()
+        a = 4 if 'stokes' in self.header['ctype3'].lower() else 3
+        if 'freq' in self.header['ctype%d' % a].lower():
+            specax = self._readspectralaxis(a)
             nu = self._readrestfreq()
             velax = (nu - specax) * sc.c / nu
         else:
-            velax = self._readspectralaxis()
+            velax = self._readspectralaxis(a)
         return velax
 
     def _readfrequencyaxis(self):
         """Returns the frequency axis in [Hz]."""
+        a = 4 if 'stokes' in self.header['ctype3'].lower() else 3
         if 'freq' in self.header['ctype3'].lower():
-            return self._readspectralaxis()
+            return self._readspectralaxis(a)
         return self._readrestfreq() * (1.0 - self._readvelocityaxis() / sc.c)
 
     def restframe_frequency(self, vlsr=0.0):
