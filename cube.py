@@ -48,14 +48,19 @@ class imagecube:
                              abs(np.diff(self.yaxis))])
 
         # Spectral axis. Make sure velocity is increasing.
-        self.velax = self._readvelocityaxis()
-        self.chan = np.mean(np.diff(self.velax))
-        self.freqax = self._readfrequencyaxis()
-        if self.chan < 0.0:
-            self.data = self.data[::-1]
-            self.velax = self.velax[::-1]
-            self.freqax = self.freqax[::-1]
-            self.chan *= -1.0
+        try:
+            self.velax = self._readvelocityaxis()
+            self.chan = np.mean(np.diff(self.velax))
+            self.freqax = self._readfrequencyaxis()
+            if self.chan < 0.0:
+                self.data = self.data[::-1]
+                self.velax = self.velax[::-1]
+                self.freqax = self.freqax[::-1]
+                self.chan *= -1.0
+        except KeyError:
+            self.velax = None
+            self.chan = None
+            self.freqax = None
 
         # Get the beam properties of the beam. If a CASA beam table is found,
         # take the median values. If neither is specified, assume that the
@@ -208,7 +213,9 @@ class imagecube:
     def get_annulus(self, r_min, r_max, PA_min=None, PA_max=None,
                     exclude_PA=False, x0=0.0, y0=0.0, inc=0.0, PA=0.0,
                     z_type='thin', params=None, nearest=None,
-                    beam_spacing=True, return_theta=True, as_ensemble=False):
+                    beam_spacing=True, return_theta=True, as_ensemble=False,
+                    suppress_warnings=True, remove_empty=True,
+                    sort_spectra=True, **kwargs):
         """
         Return an annulus (or partial), of spectra and polar angles.
 
@@ -297,7 +304,13 @@ class imagecube:
 
         if as_ensemble:
             from eddy.annulus import ensemble
-            return ensemble(spectra=dvals, theta=tvals, velax=self.velax)
+            suppress_warnings = kwargs.pop('suppress_warnings', True)
+            remove_empty = kwargs.pop('remove_empty', True)
+            sort_spectra = kwargs.pop('sort_spectra', True)
+            return ensemble(spectra=dvals, theta=tvals, velax=self.velax,
+                            suppress_warnings=suppress_warnings,
+                            remove_empty=remove_empty,
+                            sort_spectra=sort_spectra)
         if return_theta:
             return dvals, tvals
         return dvals
@@ -437,7 +450,8 @@ class imagecube:
         x_mid, y_mid = self._get_midplane_cart_coords(x0, y0, inc, PA)
         r_mid, t_mid = self._get_midplane_polar_coords(x0, y0, inc, PA)
         for _ in range(5):
-            y_tmp = y_mid - func(r_mid) * tilt * np.tan(np.radians(inc))
+            y_tmp = func(r_mid) * np.sign(tilt) * np.tan(np.radians(inc))
+            y_tmp = y_mid - y_tmp
             r_mid = np.hypot(y_tmp, x_mid)
             t_mid = np.arctan2(y_tmp, x_mid)
         return r_mid, t_mid
