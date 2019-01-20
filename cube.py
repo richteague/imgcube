@@ -16,7 +16,7 @@ class imagecube:
     msun = 1.988e30
     fwhm = 2. * np.sqrt(2 * np.log(2))
 
-    def __init__(self, path, absolute=False, kelvin='RJ', clip=None,
+    def __init__(self, path, absolute=False, kelvin=False, clip=None,
                  resample=0, verbose=None, suppress_warnings=True):
         """Load up an image cube."""
 
@@ -65,21 +65,8 @@ class imagecube:
         # Get the beam properties of the beam. If a CASA beam table is found,
         # take the median values. If neither is specified, assume that the
         # pixel size is the beam size.
-        try:
-            if self.header.get('CASAMBM', False):
-                beam = fits.open(self.path)[1].data
-                beam = np.median([b[:3] for b in beam.view()], axis=0)
-                self.bmaj, self.bmin, self.bpa = beam
-            else:
-                self.bmaj = self.header['bmaj'] * 3600.
-                self.bmin = self.header['bmin'] * 3600.
-                self.bpa = self.header['bpa']
-            self.beamarea = self._calculate_beam_area_pix()
-        except:
-            self.bmaj = self.dpix
-            self.bmin = self.dpix
-            self.bpa = 0.0
-            self.beamarea = self.dpix**2.0
+        # Beam parameters.
+        self._readbeam()
 
         # Convert brightness to Kelvin if appropriate. If kelvin = 'RJ' then
         # use the Rayleigh-Jeans approximation. If the approximation is not
@@ -654,6 +641,23 @@ class imagecube:
         return rbins, rvals
 
     # == Functions to deal the synthesized beam. == #
+
+    def _readbeam(self):
+        """Reads the beam properties from the header."""
+        try:
+            if self.header.get('CASAMBM', False):
+                beam = fits.open(self.path)[1].data
+                beam = np.median([b[:3] for b in beam.view()], axis=0)
+                self.bmaj, self.bmin, self.bpa = beam
+            else:
+                self.bmaj = self.header['bmaj'] * 3600.
+                self.bmin = self.header['bmin'] * 3600.
+                self.bpa = self.header['bpa']
+        except:
+            self.bmaj = self.dpix
+            self.bmin = self.dpix
+            self.bpa = 0.0
+            self.beamarea = self.dpix**2.0
 
     def _calculate_beam_area_str(self):
         """Beam area in steradians."""
