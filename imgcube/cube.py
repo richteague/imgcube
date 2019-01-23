@@ -290,7 +290,10 @@ class imagecube:
         # Return the values in the requested form.
 
         if as_ensemble:
-            from eddy.fit_annulus import annulus
+            try:
+                from eddy.fit_annulus import annulus
+            except ImportError:
+                raise ImportError("Please install eddy.")
             suppress_warnings = kwargs.pop('suppress_warnings', True)
             remove_empty = kwargs.pop('remove_empty', True)
             sort_spectra = kwargs.pop('sort_spectra', True)
