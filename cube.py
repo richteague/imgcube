@@ -290,14 +290,14 @@ class imagecube:
         # Return the values in the requested form.
 
         if as_ensemble:
-            from eddy.annulus import ensemble
+            from eddy.fit_annulus import annulus
             suppress_warnings = kwargs.pop('suppress_warnings', True)
             remove_empty = kwargs.pop('remove_empty', True)
             sort_spectra = kwargs.pop('sort_spectra', True)
-            return ensemble(spectra=dvals, theta=tvals, velax=self.velax,
-                            suppress_warnings=suppress_warnings,
-                            remove_empty=remove_empty,
-                            sort_spectra=sort_spectra)
+            return annulus(spectra=dvals, theta=tvals, velax=self.velax,
+                           suppress_warnings=suppress_warnings,
+                           remove_empty=remove_empty,
+                           sort_spectra=sort_spectra)
         if return_theta:
             return dvals, tvals
         return dvals
@@ -733,6 +733,11 @@ class imagecube:
         ax.add_patch(beam)
 
     # == Spectra Functions == #
+
+    @property
+    def integrated_spectrum(self):
+        """Simple integrated spectrum."""
+        return np.array([np.nansum(chan) for chan in self.data])
 
     def get_deprojected_spectra(self, rbins=None, rpnts=None, x0=0.0, y0=0.0,
                                 inc=0.0, PA=0.0, z_type='thin',
