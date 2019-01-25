@@ -1,24 +1,40 @@
-"""
-Default FITS cube class. Reads in the data and generate the axes.
-"""
-
 import os
 import numpy as np
 from astropy.io import fits
 import scipy.constants as sc
-from astropy.convolution import Kernel
-from astropy.convolution import convolve
-from astropy.convolution import convolve_fft
 
 
 class imagecube:
 
+    # Disk specific units.
     msun = 1.988e30
     fwhm = 2. * np.sqrt(2 * np.log(2))
 
-    def __init__(self, path, absolute=False, kelvin=False, clip=None,
-                 resample=0, verbose=None, suppress_warnings=True):
-        """Load up an image cube."""
+    def __init__(self, path, kelvin=False, clip=None, resample=0, verbose=None,
+                 suppress_warnings=True, absolute=False, ):
+        """
+        Load up a FITS image cube.
+
+        Args:
+            path (str): Relative path to the FITS cube.
+            kelvin (Optional[bool/str]): Convert the brightness units to [K].
+                If True, use the full Planck law, or if 'RJ' use the
+                Rayleigh-Jeans approximation. This is not as accurate but does
+                not suffer as much in the low intensity regime.
+            clip (Optional[float]): Clip the image cube down to a FOV spanning
+                (2 * clip) in [arcseconds].
+            resample (Optional[int]): Resample the data taking every Nth pixel.
+            verbose (Optional[bool]): Print out warning messages messages.
+            suppress_warnings (Optional[bool]): Suppress warnings from other
+                Python pacakges (for example numpy). If this is selected then
+                verbose will be set to False unless specified.
+            absolute (Optional[bool]): If True, use absolute coordinates using
+                Astropy's WCS. This is not tested and is not compatible with
+                most of the functions.
+
+        Returns:
+            None
+        """
 
         # Suppres warnings.
         if suppress_warnings:
@@ -38,7 +54,7 @@ class imagecube:
         # Generate the cube axes.
         self.absolute = absolute
         if self.absolute and self.verbose:
-            print("Returning absolute coordinate values.")
+            print("Returning absolute coordinate values are not tested.")
             print("WARNING: self.dpix will be strange.")
         self.xaxis = self._readpositionaxis(a=1)
         self.yaxis = self._readpositionaxis(a=2)
@@ -65,7 +81,6 @@ class imagecube:
         # Get the beam properties of the beam. If a CASA beam table is found,
         # take the median values. If neither is specified, assume that the
         # pixel size is the beam size.
-        # Beam parameters.
         self._readbeam()
 
         # Convert brightness to Kelvin if appropriate. If kelvin = 'RJ' then
@@ -109,37 +124,41 @@ class imagecube:
 
     # == Coordinate Deprojection == #
 
-    def disk_coords(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, frame='polar',
-                    z_type='thin', params=None, nearest='north', get_z=False,
-                    flat=False):
+    def disk_coords(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=0.0, psi=0.0,
+                    z1=0.0, phi=0.0, tilt=0.0, frame='polar'):
         """
-        Return the disk coordinates given the specified deprojection values.
+        Get the disk coordinates given certain geometrical parameters and an
+        emission surface. The emission surface is parameterized as a powerlaw
+        profile: z(r) = z0 * (r / 1")^psi. For a razor thin disk, z0 = 0.0,
+        while for a conical disk, as described in Rosenfeld et al. (2013),
+        psi = 1.0. A correction term, z' = z1 * (r / 1")^phi can be included
+        to replicate the downward curve of the emission surface in the outer
+        disk.
 
-        - Input -
+        Args:
+            x0 (Optional[float]): Source right ascension offset (arcsec).
+            y0 (Optional[float]): Source declination offset (arcsec).
+            inc (Optional[float]): Source inclination (degrees).
+            PA (Optional[float]): Source position angle (degrees). Measured
+                between north and the red-shifted semi-major axis in an
+                easterly direction.
+            z0 (Optional[float]): Aspect ratio at 1" for the emission surface.
+                To get the far side of the disk, make this number negative.
+            psi (Optional[float]): Flaring angle for the emission surface.
+            z1 (Optional[float]): Aspect ratio correction term at 1" for the
+                emission surface. Should be opposite sign to z0.
+            phi (Optional[float]): Flaring angle correction term for the
+                emission surface.
+            tilt (Optional[float]): Value between -1 and 1, describing the
+                rotation of the disk. For negative values, the disk is rotating
+                clockwise on the sky.
+            frame (Optional[str]): Frame of reference for the returned
+                coordinates. Either 'polar' or 'cartesian'.
 
-        x0, y0:     Disk offset in [arcsec].
-        inc:        Inclination of disk in [degrees].
-        PA:         Position angle of the disk major axis E of N in [degrees].
-        frame:      Coordinates returned, either 'cartesian' or 'polar'.
-        z_type:     Type of surface: 'thin', 'conical', 'flared', 'func'.
-        params:     Parameters need for the specified surface. If a 'thin' disk
-                    is considered, then params=None. If a 'conical' disk then
-                    params=[psi] where psi is the opening angle between the
-                    surface and the midplane in degrees. If 'flared' then the
-                    surface is a power-law described by
-
-                        z(r) = aspect_ratio * r**flaring_angle
-
-                    and thus params=[aspect_ratio, flaring_angle].
-        nearest:    Which side of the disk is nearest to the observer.
-        get_z:      Return the z value. If assuming a thin disk then this will
-                    be an array of zeros.
-        flat:       Return flattened coordaintes.
-
-        - Output -
-
-        x, y:       Disk coordinates if frame='cartesian'.
-        r, t:       Disk coordinates if frame='polar'.
+        Returns:
+            c1 (ndarryy): Either r (cylindrical) or x depending on the frame.
+            c2 (ndarray): Either theta or y depending on the frame.
+            c3 (ndarray): Height above the midplane, z.
         """
 
         # Check the input variables.
@@ -147,117 +166,89 @@ class imagecube:
         frame = frame.lower()
         if frame not in ['cartesian', 'polar']:
             raise ValueError("frame must be 'cartesian' or 'polar'.")
-        z_type = z_type.lower()
-        if z_type not in ['thin', 'conical', 'flared', 'func']:
-            raise ValueError("Unknown z_type value.")
-        nearest = nearest.lower()
-        if nearest not in ['north', 'south']:
-            raise ValueError("Either 'north' or 'south' must be closer.")
-        tilt = 1.0 if nearest == 'north' else -1.0
 
-        # Geometrically thin disk.
+        # Define the emission surface function. This approach should leave
+        # some flexibility for more complex emission surface parameterizations.
 
-        if z_type == 'thin':
-            if frame == 'cartesian':
-                c1, c2 = self._get_midplane_cart_coords(x0, y0, inc, PA)
-            else:
-                c1, c2 = self._get_midplane_polar_coords(x0, y0, inc, PA)
-            if flat:
-                return c1.flatten(), c2.flatten()
-            if get_z:
-                return c1, c2, np.zeros(c1.shape)
-            return c1, c2
+        def func(r):
+            return z0 * np.power(r, psi) + z1 * np.power(r, phi)
 
-        # If not thin then must have some vertical extent.
-        # Define the height functions here to pass to the other functions.
-
-        if z_type == 'conical':
-            def func(r):
-                return r * np.tan(np.radians(params))
-        elif z_type == 'flared':
-            def func(r):
-                return params[0] * np.power(r, params[1])
-        else:
-            func = params
-        assert callable(func)
-
-        # Geometrically thick disk.
+        # Calculate the pixel values.
 
         if frame == 'cartesian':
             c1, c2 = self._get_flared_cart_coords(x0, y0, inc, PA, func, tilt)
-            if flat:
-                c1, c2 = c1.flatten(), c2.flatten()
-            if get_z:
-                return c1, c2, func(np.hypot(c1, c2))
+            c3 = func(np.hypot(c1, c2))
         else:
             c1, c2 = self._get_flared_polar_coords(x0, y0, inc, PA, func, tilt)
-            if flat:
-                c1, c2 = c1.flatten(), c2.flatten()
-            if get_z:
-                return c1, c2, func(c1)
-        return c1, c2
+            c3 = func(c1)
+        return c1, c2, c3
 
     def get_annulus(self, r_min, r_max, PA_min=None, PA_max=None,
-                    exclude_PA=False, x0=0.0, y0=0.0, inc=0.0, PA=0.0,
-                    z_type='thin', params=None, nearest=None,
-                    beam_spacing=True, return_theta=True, as_ensemble=False,
+                    exclude_PA=False, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=0.0,
+                    psi=1.0, z1=0.0, phi=1.0, tilt=0.0, beam_spacing=True,
+                    return_theta=True, as_ensemble=False,
                     suppress_warnings=True, remove_empty=True,
                     sort_spectra=True, **kwargs):
         """
-        Return an annulus (or partial), of spectra and polar angles.
+        Return an annulus (or section of), of spectra and their polar angles.
 
-        - Input -
+        Args:
+            r_min (float): Minimum midplane radius of the annulus in [arcsec].
+            r_max (float): Maximum midplane radius of the annulus in [arcsec].
+            PA_min (Optional[float]): Minimum polar angle of the segment of the
+                annulus in [degrees]. Note this is the polar angle, not the
+                position angle.
+            PA_max (Optional[float]): Maximum polar angle of the segment of the
+                annulus in [degrees]. Note this is the polar angle, not the
+                position angle.
+            exclude_PA (Optional[bool]): If True, exclude the provided polar
+                angle range rather than include.
+            x0 (Optional[float]): Source right ascension offset (arcsec).
+            y0 (Optional[float]): Source declination offset (arcsec).
+            inc (Optional[float]): Source inclination (degrees).
+            PA (Optional[float]): Source position angle (degrees). Measured
+                between north and the red-shifted semi-major axis in an
+                easterly direction.
+            z0 (Optional[float]): Aspect ratio at 1" for the emission surface.
+                To get the far side of the disk, make this number negative.
+            psi (Optional[float]): Flaring angle for the emission surface.
+            z1 (Optional[float]): Aspect ratio correction term at 1" for the
+                emission surface. Should be opposite sign to z0.
+            phi (Optional[float]): Flaring angle correction term for the
+                emission surface.
+            tilt (Optional[float]): Value between -1 and 1, describing the
+                rotation of the disk. For negative values, the disk is rotating
+                clockwise on the sky.
+            beam_spacing (Optional[bool/float]): If True, randomly sample the
+                annulus such that each pixel is at least a beam FWHM apart. A
+                number can also be used in place of a boolean which will
+                describe the number of beam FWHMs to separate each sample by.
+            as_ensemble (Optional[bool]): If true, return an ensemble instance
+                from `eddy`. Requires `eddy` to be installed.
 
-        r_min:          Minimum midplane radius of the annulus in [arcsec].
-        r_max:          Maximum midplane radius of the annulus in [arcsec].
-        PA_min:         Minimum polar angle of the segment in [degrees].
-        PA_max:         Maximum polar angle of the segment in [degrees].
-        exclude_PA:     If True, exclude the provided polar angle range.
-        x0, y0:         Disk center offset in [arcsec].
-        inc:            Inclination of the disk in [degrees].
-        PA:             Positiona angle of the disk in [degrees]. Given as the
-                        angle of the red-shifted major axis measured E of N.
-        z_type:         Type of emission surface to assume (see disk_coords()).
-                        By deafult assume a thin disk.
-        params:         Parameters needed for the provided z_type.
-        nearest:        Nearerst side of the disk for 3D disks.
-        beam_spacing:   If True, sample the annulus at beam spacing. A number
-                        can also be used in place of a bool and that factor
-                        will be used and the number of beams.
-        return_theta:   If True, return the midplane polar angles of the
-                        points in [radians].
-        as_ensemble:    Return an ensemble instance from `eddy`.
-
-        - Output -
-
-        spectra:        The spectra from each pixel in the annulus.
-        theta:          If requested, the midplane polar angles in [radians] of
-                        each of the returned spectra.
-        ensemble:       An `eddy` as_ensemble if ensemble is True.
-
+        Returns:
+            spectra (ndarray): The spectra from each pixel in the annulus.
+            theta (ndarray): The midplane polar angles in [radians] of each of
+                the returned spectra.
+            ensemble (annulus instance): An `eddy` annulus instance if
+                as_ensemble == True.
         """
-
-        # Check emission surface parameters.
-
-        if z_type.lower() != 'thin' and nearest is None:
-            raise ValueError("Must specify nearest side for 3D disk.")
-        elif z_type.lower() == 'thin':
-            nearest = 'north'
-
-        # Get the mask and flatten.
 
         dvals = self.data.copy()
         if dvals.ndim == 3:
             dvals = dvals.reshape(self.data.shape[0], -1)
         else:
             dvals = np.atleast_2d(dvals.flatten())
-        mask = self.get_mask(r_min=r_min, r_max=r_max, PA_min=PA_min,
-                             PA_max=PA_max, exclude_PA=exclude_PA, x0=x0,
-                             y0=y0, inc=inc, PA=PA, z_type=z_type,
-                             params=params, nearest=nearest, flat=True)
-        rvals, tvals = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA,
-                                        z_type=z_type, params=params,
-                                        nearest=nearest, flat=True)
+
+        mask = self.get_mask(r_min=r_min, r_max=r_max, exclude_r=False,
+                             PA_min=PA_min, PA_max=PA_max,
+                             exclude_PA=exclude_PA, x0=x0, y0=y0, inc=inc,
+                             PA=PA, z0=z0, psi=psi, z1=z1, phi=phi, tilt=tilt)
+        mask = mask.flatten()
+
+        rvals, tvals, _ = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA, z0=z0,
+                                           psi=psi, z1=z1, phi=phi, tilt=tilt)
+        rvals, tvals = rvals.flatten(), tvals.flatten()
         dvals, rvals, tvals = dvals[:, mask].T, rvals[mask], tvals[mask]
 
         # Apply the beam sampling.
@@ -301,9 +292,7 @@ class imagecube:
                            suppress_warnings=suppress_warnings,
                            remove_empty=remove_empty,
                            sort_spectra=sort_spectra)
-        if return_theta:
-            return dvals, tvals
-        return dvals
+        return dvals, tvals
 
     def disk_to_sky(self, coords, frame='polar', side='top', x0=0.0, y0=0.0,
                     inc=0.0, PA=0.0, z_type='thin', params=None,
@@ -405,13 +394,15 @@ class imagecube:
         angles = np.where(mask, self.disk_coords()[1], np.nan)
         return np.nanmean(np.degrees(angles)) % 360.
 
-    def _rotate_coords(self, x, y, PA):
+    @staticmethod
+    def _rotate_coords(x, y, PA):
         """Rotate (x, y) by PA [deg]."""
         x_rot = x * np.cos(np.radians(PA)) - y * np.sin(np.radians(PA))
         y_rot = y * np.cos(np.radians(PA)) + x * np.sin(np.radians(PA))
         return x_rot, y_rot
 
-    def _deproject_coords(self, x, y, inc):
+    @staticmethod
+    def _deproject_coords(x, y, inc):
         """Deproject (x, y) by inc [deg]."""
         return x, y / np.cos(np.radians(inc))
 
@@ -427,8 +418,8 @@ class imagecube:
     def _get_midplane_cart_coords(self, x0, y0, inc, PA):
         """Return cartesian coordaintes of midplane in [arcsec, arcsec]."""
         x_sky, y_sky = self._get_cart_sky_coords(x0, y0)
-        x_rot, y_rot = self._rotate_coords(y_sky, x_sky, -PA)
-        return self._deproject_coords(x_rot, y_rot, inc)
+        x_rot, y_rot = imagecube._rotate_coords(y_sky, x_sky, -PA)
+        return imagecube._deproject_coords(x_rot, y_rot, inc)
 
     def _get_midplane_polar_coords(self, x0, y0, inc, PA):
         """Return the polar coordinates of midplane in [arcsec, radians]."""
@@ -689,6 +680,7 @@ class imagecube:
 
     def _beamkernel(self, bmaj=None, bmin=None, bpa=None, nbeams=1.0):
         """Returns the 2D Gaussian kernel for convolution."""
+        from astropy.convolution import Kernel
         if bmaj is None and bmin is None and bpa is None:
             bmaj = self.bmaj
             bmin = self.bmin
@@ -712,7 +704,9 @@ class imagecube:
     def _convolve_image(self, image, kernel, fast=True):
         """Convolve the image with the provided kernel."""
         if fast:
+            from astropy.convolution import convolve_fft
             return convolve_fft(image, kernel)
+        from astropy.convolution import convolve
         return convolve(image, kernel)
 
     def convolve_cube(self, bmaj=None, bmin=None, bpa=None, nbeams=1.0,
@@ -853,55 +847,45 @@ class imagecube:
 
     # == Rotation Functions == #
 
-    def keplerian_profile(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z_type='thin',
-                          nearest='north', params=None,  mstar=1.0, dist=100.,
-                          vlsr=0.0):
+    def keplerian_profile(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=0.0,
+                          psi=1.0, z1=0.0, phi=1.0, tilt=0.0, mstar=1.0,
+                          dist=100., vlsr=0.0):
         """Return a Keplerian rotation profile (for the near side) in [m/s]."""
         rvals, tvals, zvals = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA,
-                                               z_type=z_type, nearest=nearest,
-                                               params=params, get_z=True,
-                                               frame='polar')
-        v_rot = sc.G * mstar * self.msun * np.power(rvals * dist * sc.au, 2.0)
-        v_rot *= np.power(np.hypot(rvals, zvals) * sc.au * dist, -3.0)
-        vrot = np.sqrt(v_rot) * np.cos(tvals) * np.sin(np.radians(inc)) + vlsr
-        return vrot
+                                               z0=z0, psi=psi, z1=z1, phi=phi,
+                                               tilt=tilt)
+        vrot = sc.G * mstar * self.msun * np.power(rvals * dist * sc.au, 2.0)
+        vrot *= np.power(np.hypot(rvals, zvals) * sc.au * dist, -3.0)
+        return np.sqrt(vrot) * np.cos(tvals) * np.sin(np.radians(inc)) + vlsr
 
-    def keplerian_curve(self, rpnts, mstar, z_type='thin', params=None,
-                        dist=100., inc=None):
-        """Return a Keplerian rotation profile at rpnts in [m/s]."""
-
-        # Make sure rpnts is an array.
+    def keplerian_curve(self, rpnts, mstar, z0=0.0, psi=1.0, z1=0.0, phi=1.0,
+                        dist=100., inc=90.0):
+        """Return a Keplerian rotation profile [m/s] at rpnts [arcsec]."""
         rpnts = np.squeeze(rpnts)
-
-        # Define the coordinates.
-        if z_type.lower() not in ['thin', 'conical', 'flared']:
-            raise ValueError("Unknown z_type: %s." % z_type)
-        if z_type.lower() == 'thin':
-            zpnts = np.zeros(rpnts.size)
-        elif z_type.lower() == 'conical':
-            zpnts = rpnts * np.tan(np.radians(params))
-        else:
-            zpnts = params[0] * np.power(rpnts, params[1])
+        zpnts = z0 * np.power(rpnts, psi) + z1 * np.power(rpnts, phi)
         r_m, z_m = rpnts * dist * sc.au, zpnts * dist * sc.au
-
-        # Calculate the Keplerian rotation.
         vkep = sc.G * mstar * self.msun * np.power(r_m, 2.0)
         vkep = np.sqrt(vkep / np.power(np.hypot(r_m, z_m), 3.0))
-        if inc is None:
-            return vkep
         return vkep * np.sin(np.radians(inc))
 
     # == Functions to write a Keplerian mask for CLEANing. == #
 
-    def CLEAN_mask(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z_type='thin',
-                   nearest='north', params=None, mstar=1.0, dist=100.,
-                   r_max=None, r_min=None, vlsr=0.0, dV0=250., dVq=0.0,
+    def CLEAN_mask(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=0.0, psi=1.0,
+                   z1=0.0, phi=1.0, tilt=0.0, mstar=1.0, dist=100.,
+                   r_max=None, r_min=None, vlsr=0.0, dV0=050., dVq=-0.4,
                    nbeams=0.0, fname=None, fast=True, return_mask=False):
         """
-        Using the attached FITS cube, generate a Keplerian mask for CASA. This
-        also allows for 3D disks and the change in rotation pattern associated
-        with them. These are described by the `z_type` parameter and the params
-        argument.
+        Using the attached FITS cube, generate a Keplerian mask appropriate for
+        CLEANing in CASA. This also allows for 3D disks and the change in
+        rotation pattern associated with them. We additionally allow for a
+        radially varying linewidth.
+
+        Input:
+
+            x0, y0, inc, PA, z0, psi, z1, phi, tilt: Geometrical properties of
+                the disk and emission surface. For more details, see the
+                docstring for disk_coords().
+            mstar (float):
 
             'thin'      : A geometrically thin disk.
             'conical'   : A straight surface with params=psi where psi is the
@@ -953,35 +937,15 @@ class imagecube:
         Coming Soon.
         """
 
-        # Check what sort of surface is wanted.
-        z_type = z_type.lower()
-        if z_type not in ['thin', 'conical', 'flared']:
-            raise ValueError("Unknown 'z_type'.")
-
-        # Make sure we can iterate over the params to till in the midplane.
-        params = np.atleast_1d(params)
-        if z_type == 'thin':
-            iter_params = np.array([params[0]])
-        elif z_type == 'conical':
-            iter_params = np.arange(0, params[0], 4.0)
-            iter_params = np.linspace(0, params[0], iter_params.size + 1)
-        else:
-            iter_params = np.arange(0, params[0], 0.05)
-            iter_params = np.linspace(0, params[0], iter_params.size + 1)
-            iter_params = np.vstack([iter_params,
-                                     params[1] * np.ones(iter_params.size)]).T
-        if iter_params.shape[0] > 5 and self.verbose:
-            print("WARNING: Large number of intermediate masks. May freeze.")
-
         # Allow for multiple hyperfine components.
         vlsr = np.atleast_1d(vlsr)
 
-        # Loop over all the different parameters and combine the masks.
+        # Loop over all the systemic velocities.
         mask = [self._keplerian_mask(x0=x0, y0=y0, inc=inc, PA=PA,
-                                     z_type=z_type, nearest=nearest, params=p,
-                                     mstar=mstar, r_max=r_max, r_min=r_min,
-                                     dist=dist, vlsr=v, dV=dV0, dVq=dVq)
-                for v in vlsr for p in iter_params]
+                                     z0=0.0, psi=psi, z1=z1, phi=phi,
+                                     tilt=tilt, mstar=mstar, r_max=r_max,
+                                     r_min=r_min, dist=dist, vlsr=v, dV=dV0,
+                                     dVq=dVq) for v in vlsr]
         mask = np.where(np.nansum(mask, axis=0) > 0, 1, 0)
         if mask.shape != self.data.shape:
             raise ValueError("Mask shape is not the same as the data.")
@@ -1007,72 +971,98 @@ class imagecube:
             hdu.writeto(fname.replace('.fits', '') + '.fits',
                         clobber=True, output_verify='fix')
 
-    def _dV_profile(self, x0, y0, inc, PA, z_type='thin', params=None,
-                    nearest='north', dV=450., dVq=0.0):
-        """Return a radial linewidth profile."""
+    def _dV_profile(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=0.0, psi=1.0,
+                    z1=0.0, phi=1.0, tilt=0.0, dV=450., dVq=0.0):
+        """Returns a deprojected linewidth profile for a given geometry."""
         if dVq == 0.0:
-            return dV
-        rdisk = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA, z_type=z_type,
-                                 nearest=nearest, params=params)[0]
+            return dV * np.ones((self.nypix, self.nxpix))
+        rdisk = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA, z0=z0, psi=psi,
+                                 z1=z1, phi=phi, tilt=tilt)[0]
         return dV * np.power(rdisk, dVq)
 
-    def _keplerian_mask(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z_type='thin',
-                        nearest='north', params=None, mstar=1.0, r_max=None,
+    def _keplerian_mask(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=0.0, psi=1.0,
+                        z1=0.0, phi=1.0, tilt=0.0, mstar=1.0, r_max=None,
                         r_min=None, dist=100, vlsr=0.0, dV=250., dVq=0.0):
         """Generate the Keplerian mask as a cube. dV is FWHM of line."""
-
-        # Start the mask.
-        params = np.atleast_1d(params)
         mask = np.ones(self.data.shape) * self.velax[:, None, None]
         r_min = 0.0 if r_min is None else r_min
         r_max = 1e5 if r_max is None else r_max
-        dV = self._dV_profile(x0=x0, y0=y0, inc=inc, PA=PA, z_type=z_type,
-                              params=params, nearest=nearest, dV=dV, dVq=dVq)
+        dV = self._dV_profile(x0=x0, y0=y0, inc=inc, PA=PA, z0=z0, psi=psi,
+                              z1=z1, phi=phi, tilt=tilt, dV=dV, dVq=dVq)
 
         # Rotation of the front side of the disk.
-        v1 = self.keplerian_profile(x0=x0, y0=y0, inc=inc, PA=PA,
-                                    z_type=z_type, nearest=nearest,
-                                    params=params,  mstar=mstar,
-                                    dist=dist, vlsr=vlsr)
-        rr = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA, z_type=z_type,
-                              nearest=nearest, params=params)[0]
+        v1 = self.keplerian_profile(x0=x0, y0=y0, inc=inc, PA=PA, z0=z0,
+                                    psi=psi, z1=z1, phi=phi, tilt=tilt,
+                                    mstar=mstar, dist=dist, vlsr=vlsr)
+        rr = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA, z0=z0, psi=psi,
+                              z1=z1, phi=phi, tilt=tilt)[0]
         v1 = np.where(np.logical_and(rr >= r_min, rr <= r_max), v1, 1e20)
         v1 = abs(mask - np.ones(self.data.shape) * v1[None, :, :])
-        if z_type == 'thin' or params[0] == 0.0:
-            return np.where(v1 <= dV, 1., 0.)
+        if z0 == 0.0 and z1 == 0.0:
+            return np.where(v1 <= dV, 1.0, 0.0)
 
         # Rotation of the far side of the disk if appropriate.
-        params[0] = -params[0]
-        v2 = self.keplerian_profile(x0=x0, y0=y0, inc=inc, PA=PA,
-                                    z_type=z_type, nearest=nearest,
-                                    params=params,  mstar=mstar, dist=dist,
-                                    vlsr=vlsr)
-        rr = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA, z_type=z_type,
-                              nearest=nearest, params=params)[0]
+        v2 = self.keplerian_profile(x0=x0, y0=y0, inc=inc, PA=PA, z0=-z0,
+                                    psi=psi, z1=-z1, phi=phi, tilt=tilt,
+                                    mstar=mstar, dist=dist, vlsr=vlsr)
+        rr = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA, z0=-z0, psi=psi,
+                              z1=-z1, phi=phi, tilt=tilt)[0]
         v2 = np.where(np.logical_and(rr >= r_min, rr <= r_max), v2, 1e20)
         v2 = abs(mask - np.ones(self.data.shape) * v2[None, :, :])
-        return np.where(np.logical_or(v1 <= dV, v2 <= dV), 1., 0.)
+        return np.where(np.logical_or(v1 <= dV, v2 <= dV), 1.0, 0.0)
 
     # == Masking Functions == #
 
-    def get_mask(self, r_min=None, r_max=None, PA_min=None, PA_max=None,
-                 exclude_r=False, exclude_PA=False, x0=0.0, y0=0.0, inc=0.0,
-                 PA=0.0, z_type='thin', params=None, nearest='north',
-                 flat=False):
-        """Returns a 2D mask for pixels in the given region."""
-        rvals, tvals = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA,
-                                        z_type=z_type, params=params,
-                                        nearest=nearest, frame='polar')
+    def get_mask(self, r_min=None, r_max=None, exclude_r=False, PA_min=None,
+                 PA_max=None, exclude_PA=False, x0=0.0, y0=0.0, inc=0.0,
+                 PA=0.0, z0=0.0, psi=1.0, z1=0.0, phi=1.0, tilt=0.0):
+        """
+        Returns a 2D mask for pixels in the given region.
+
+        Args:
+            r_min (float): Minimum midplane radius of the annulus in [arcsec].
+            r_max (float): Maximum midplane radius of the annulus in [arcsec].
+            exclude_r (Optional[float]): If True, exclude the provided radial
+                rangle rather than including it.
+            PA_min (Optional[float]): Minimum polar angle of the segment of the
+                annulus in [degrees]. Note this is the polar angle, not the
+                position angle.
+            PA_max (Optional[float]): Maximum polar angle of the segment of the
+                annulus in [degrees]. Note this is the polar angle, not the
+                position angle.
+            exclude_PA (Optional[bool]): If True, exclude the provided polar
+                angle range rather than including it.
+            x0 (Optional[float]): Source right ascension offset (arcsec).
+            y0 (Optional[float]): Source declination offset (arcsec).
+            inc (Optional[float]): Source inclination (degrees).
+            PA (Optional[float]): Source position angle (degrees). Measured
+                between north and the red-shifted semi-major axis in an
+                easterly direction.
+            z0 (Optional[float]): Aspect ratio at 1" for the emission surface.
+                To get the far side of the disk, make this number negative.
+            psi (Optional[float]): Flaring angle for the emission surface.
+            z1 (Optional[float]): Aspect ratio correction term at 1" for the
+                emission surface. Should be opposite sign to z0.
+            phi (Optional[float]): Flaring angle correction term for the
+                emission surface.
+            tilt (Optional[float]): Value between -1 and 1, describing the
+                rotation of the disk. For negative values, the disk is rotating
+                clockwise on the sky.
+
+        Returns:
+            mask (ndarray): A 2D mask.
+        """
+        rvals, tvals, _ = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA, z0=z0,
+                                           psi=psi, z1=z1, phi=phi, tilt=tilt,
+                                           frame='polar')
         r_min = rvals.min() if r_min is None else r_min
         r_max = rvals.max() if r_max is None else r_max
+        r_mask = np.logical_and(rvals >= r_min, rvals <= r_max)
+        r_mask = ~r_mask if exclude_r else r_mask
         PA_min = tvals.min() if PA_min is None else np.radians(PA_min)
         PA_max = tvals.max() if PA_max is None else np.radians(PA_max)
-        r_mask = np.logical_and(rvals >= r_min, rvals <= r_max)
         PA_mask = np.logical_and(tvals >= PA_min, tvals <= PA_max)
-        r_mask = ~r_mask if exclude_r else r_mask
         PA_mask = ~PA_mask if exclude_PA else PA_mask
-        if flat:
-            return (r_mask * PA_mask).flatten()
         return r_mask * PA_mask
 
     # == Functions to read the data cube axes. == #
