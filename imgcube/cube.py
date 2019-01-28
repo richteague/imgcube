@@ -23,7 +23,8 @@ class imagecube:
                 not suffer as much in the low intensity regime.
             clip (Optional[float]): Clip the image cube down to a FOV spanning
                 (2 * clip) in [arcseconds].
-            resample (Optional[int]): Resample the data taking every Nth pixel.
+            resample (Optional[int]): Resample the data spectrally, averaging
+                over `resample` number of channels.
             verbose (Optional[bool]): Print out warning messages messages.
             suppress_warnings (Optional[bool]): Suppress warnings from other
                 Python pacakges (for example numpy). If this is selected then
@@ -33,7 +34,7 @@ class imagecube:
                 most of the functions.
 
         Returns:
-            None
+            None)
         """
 
         # Suppres warnings.
@@ -106,7 +107,7 @@ class imagecube:
             self._clip_cube(clip)
 
         # Resample the data by a factor by a factor of N.
-        if resample < 0:
+        if resample <= 0:
             raise ValueError("'resample' must be equal to or larger than 0.")
         elif resample > 1:
             N = int(resample)
@@ -136,10 +137,10 @@ class imagecube:
         disk.
 
         Args:
-            x0 (Optional[float]): Source right ascension offset (arcsec).
-            y0 (Optional[float]): Source declination offset (arcsec).
-            inc (Optional[float]): Source inclination (degrees).
-            PA (Optional[float]): Source position angle (degrees). Measured
+            x0 (Optional[float]): Source right ascension offset [arcsec].
+            y0 (Optional[float]): Source declination offset [arcsec].
+            inc (Optional[float]): Source inclination [deg].
+            PA (Optional[float]): Source position angle [deg]. Measured
                 between north and the red-shifted semi-major axis in an
                 easterly direction.
             z0 (Optional[float]): Aspect ratio at 1" for the emission surface.
@@ -191,6 +192,8 @@ class imagecube:
                     sort_spectra=True, **kwargs):
         """
         Return an annulus (or section of), of spectra and their polar angles.
+        Can select spatially independent pixels within the annulus, however as
+        this is random, each draw will be different.
 
         Args:
             r_min (float): Minimum midplane radius of the annulus in [arcsec].
@@ -203,10 +206,10 @@ class imagecube:
                 position angle.
             exclude_PA (Optional[bool]): If True, exclude the provided polar
                 angle range rather than include.
-            x0 (Optional[float]): Source right ascension offset (arcsec).
-            y0 (Optional[float]): Source declination offset (arcsec).
-            inc (Optional[float]): Source inclination (degrees).
-            PA (Optional[float]): Source position angle (degrees). Measured
+            x0 (Optional[float]): Source right ascension offset [arcsec].
+            y0 (Optional[float]): Source declination offset [arcsec].
+            inc (Optional[float]): Source inclination [deg].
+            PA (Optional[float]): Source position angle [deg]. Measured
                 between north and the red-shifted semi-major axis in an
                 easterly direction.
             z0 (Optional[float]): Aspect ratio at 1" for the emission surface.
@@ -294,34 +297,42 @@ class imagecube:
                            sort_spectra=sort_spectra)
         return dvals, tvals
 
-    def disk_to_sky(self, coords, frame='polar', side='top', x0=0.0, y0=0.0,
-                    inc=0.0, PA=0.0, z_type='thin', params=None,
-                    nearest='north', return_idx=False):
+    def disk_to_sky(self, coords, frame='polar', x0=0.0, y0=0.0, inc=0.0,
+                    PA=0.0, z0=0.0, psi=1.0, z1=0.0, phi=0.0, tilt=0.0,
+                    return_idx=False):
         """
-        For a given midplane coordinate, either (r, theta) or (x, y), return
-        the nearest sky coordiantes in (x, y). Useful for plotting.
+        For a given disk midplane coordinate, either (r, theta) or (x, y),
+        return interpolated sky coordiantes in (x, y) for plotting.
 
-        - Input -
+        Args:
+            coords (list): Midplane coordaintes to find in (x, y) in [arcsec,
+                arcsec] or (r, theta) in [arcsec, deg].
+            frame (Optional[str]): Frame of input coordinates, either
+                'cartesian' or 'polar'.
+            x0 (Optional[float]): Source right ascension offset [arcsec].
+            y0 (Optional[float]): Source declination offset [arcsec].
+            inc (Optional[float]): Source inclination [deg].
+            PA (Optional[float]): Source position angle [deg]. Measured
+                between north and the red-shifted semi-major axis in an
+                easterly direction.
+            z0 (Optional[float]): Aspect ratio at 1" for the emission surface.
+                To get the far side of the disk, make this number negative.
+            psi (Optional[float]): Flaring angle for the emission surface.
+            z1 (Optional[float]): Aspect ratio correction term at 1" for the
+                emission surface. Should be opposite sign to z0.
+            phi (Optional[float]): Flaring angle correction term for the
+                emission surface.
+            tilt (Optional[float]): Value between -1 and 1, describing the
+                rotation of the disk. For negative values, the disk is rotating
+                clockwise on the sky.
+            return_idx (Optional[bool]): If True, return the indices of the
+                nearest pixels rather than the interpolated values.
 
-        coords:     Midplane coordaintes to find in (x, y) in [arcsec] or
-                    (r, theta) in [arcsec, degrees].
-        frame:      Frame of input coordinates, either 'cartesian' or 'polar'.
-        side:       Side of the disk to use in deprojection, 'top' or .bottom'.
-        x0, y0:     Disk offset in [arcsec].
-        inc:        Inclination of the disk in [degree].
-        PA:         Position angle of the disk in [degrees]. Given as the angle
-                    of the red-shifted major axis measured E of N.
-        z_type:     Type of emission surface to assume (see disk_coords()). By
-                    default assume a thin disk.
-        params:     Parameters needed for the provided z_type.
-        nearest:    Nearest side of the disk.
-        return_idx: If True, return the indices of the nearest pixels.
-
-        - Output -
-
-        x, y:       Sky-plane coordinates of the provided disk coordinates in
-                    [arcsec].
-
+        Returns:
+            x (float/int): Either the sky plane x-coordinate in [arcsec] or the
+                index of the closest pixel.
+            y (float/int): Either the sky plane y-coordinate in [arcsec] or the
+                index of the closest pixel.
         """
 
         # Import the necessary module.
@@ -331,7 +342,7 @@ class imagecube:
         except Exception:
             raise ValueError("Can't find 'scipy.interpolate.griddata'.")
 
-        # Transform cartesian coordintes then transform back.
+        # Make sure input coords are cartesian.
 
         frame = frame.lower()
         if frame not in ['polar', 'cartesian']:
@@ -347,36 +358,24 @@ class imagecube:
         else:
             xdisk, ydisk = coords
 
-        # Correct for the near and far side of the disk.
-
-        z_type = z_type.lower()
-        if z_type not in ['thin', 'conical', 'flared']:
-            raise ValueError("Unknown z_type.")
-        side = side.lower()
-        if side not in ['top', 'bottom']:
-            raise ValueError("Unknown side.")
-        if z_type == 'conical' and side == 'bottom':
-            params = -1.0 * np.atleast_1d(params)[0]
-        elif z_type == 'flared' and side == 'bottom':
-            params[0] = -1.0 * params[0]
-
-        # Calculate the midplane coordinates and generate a grid so we can map
-        # disk coordinates to sky coordinates.
+        # Grab disk coordinates and sky coordinates to interpolate between.
 
         xdisk_grid, ydisk_grid = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA,
-                                                  z_type=z_type, params=params,
-                                                  nearest=nearest, flat=True,
-                                                  frame='cartesian')
-        xsky_grid, ysky_grid = self._get_cart_sky_coords(x0=0.0, y0=0.0)
+                                                  z0=z0, psi=psi, z1=z1,
+                                                  phi=phi, tilt=tilt,
+                                                  frame='cartesian')[:2]
+        xdisk_grid, ydisk_grid = xdisk_grid.flatten(), ydisk_grid.flatten()
+        xsky_grid, ysky_grid = self._get_cart_sky_coords()[:2]
         xsky_grid, ysky_grid = xsky_grid.flatten(), ysky_grid.flatten()
 
         xsky = griddata((xdisk_grid, ydisk_grid), xsky_grid, (xdisk, ydisk),
-                        method='nearest', fill_value=np.nan)
+                        method='nearest' if return_idx else 'linear',
+                        fill_value=np.nan)
         ysky = griddata((xdisk_grid, ydisk_grid), ysky_grid, (xdisk, ydisk),
-                        method='nearest', fill_value=np.nan)
+                        method='nearest' if return_idx else 'linear',
+                        ffill_value=np.nan)
 
         # Return the values or calculate the indices.
-        # TODO: Nicer way of de-vectorising.
 
         if not return_idx:
             xsky = xsky if xsky.size > 1 else xsky[0]
@@ -389,7 +388,7 @@ class imagecube:
         return xidx, yidx
 
     def _estimate_PA(self, clip=95):
-        """Estimate the PA of the disk."""
+        """Estimate the PA in [deg] of the disk."""
         mask = self.data >= np.nanpercentile(self.data, [clip])
         angles = np.where(mask, self.disk_coords()[1], np.nan)
         return np.nanmean(np.degrees(angles)) % 360.
@@ -446,60 +445,65 @@ class imagecube:
     # == Radial Profiles == #
 
     def radial_profile(self, rpnts=None, rbins=None, x0=0.0, y0=0.0, inc=0.0,
-                       PA=0.0, z_type='thin', nearest='north', params=None,
-                       collapse='max', statistic='mean', uncertainty='stddev',
+                       PA=0.0, z0=0.0, psi=1.0, z1=0.0, phi=1.0, tilt=0.0,
                        PA_min=None, PA_max=None, exclude_PA=False,
-                       beam_spacing=False, clip_values=None,
-                       poisson_errors=False):
+                       beam_spacing=False, collapse='max', clip_values=None,
+                       statistic='mean', uncertainty='stddev'):
         """
-        Returns the azimuthally averaged intensity profile. If the data is 3D,
-        then it is collapsed along the spectral axis with some function..
+        Returns a radial profile of the data. If the data is 3D, then it is
+        collapsed along the spectral axis with some provided function.
 
-        - Input -
+        Args:
+            rpnts (ndarray): Bin centers in [arcsec].
+            rbins (ndarray): Bin edges in [arcsec].
+                NOTE: Only `rpnts` or `rbins` needs to be specified.
+            x0 (Optional[float]): Source right ascension offset [arcsec].
+            y0 (Optional[float]): Source declination offset [arcsec].
+            inc (Optional[float]): Source inclination [deg].
+            PA (Optional[float]): Source position angle [deg]. Measured
+                between north and the red-shifted semi-major axis in an
+                easterly direction.
+            z0 (Optional[float]): Aspect ratio at 1" for the emission surface.
+                To get the far side of the disk, make this number negative.
+            psi (Optional[float]): Flaring angle for the emission surface.
+            z1 (Optional[float]): Aspect ratio correction term at 1" for the
+                emission surface. Should be opposite sign to z0.
+            phi (Optional[float]): Flaring angle correction term for the
+                emission surface.
+            tilt (Optional[float]): Value between -1 and 1, describing the
+                rotation of the disk. For negative values, the disk is rotating
+                clockwise on the sky.
+            PA_min (Optional[float]): Minimum polar angle of the segment of the
+                annulus in [degrees]. Note this is the polar angle, not the
+                position angle.
+            PA_max (Optional[float]): Maximum polar angle of the segment of the
+                annulus in [degrees]. Note this is the polar angle, not the
+                position angle.
+            exclude_PA (Optional[bool]): If True, exclude the provided polar
+                angle range rather than include.
+            collapse (Optional[str]): Method used to collapse 3D data. Must be
+                'max' to take the maximum value, 'sum' to sum along the
+                spectral axis or 'int' to integrate along the spectral axis.
+            clip_values (Optional[float/iterable]): Clip the data values. If a
+                single value is given, clip all values below this, if two
+                values are given, clip values between them.
+            statistic (Optional[str]): Statistic to use to determin the bin
+                value, either 'mean' or 'median'.
+            uncertainty (Optional[str]): Measure of the bin uncertainty. Either
+                'std' for the standard deviation or 'percentiles' for the 16th
+                to 84th percentile range about the median.
 
-        rpnts:          Bin centers in [arcsec] for the binning.
-        rbins:          Bin edges in [arcsec] for the binning. Note: Only
-                        specify either rpnts or rbins.
-        x0, y0:         Source centre offset in [arcsec].
-        inc, PA:        Inclination and position angle of the disk, both in
-                        [degrees].
-        z_type:         The type of surface to assume, either 'thin' for a
-                        geometrically thin disk, or 'conical' or 'flared'. For
-                        the latter two options, see disk_coords().
-        nearest:        If a 3D disk is considered, which side of the disk is
-                        closest to the observer: 'north' or 'south'.
-        params:         Parameters associated with the chosen 'z_type'.
-        collapse:       Method to collapse the cube: 'max', maximum value along
-                        the spectral axis; 'sum', sum along the spectral axis;
-                        'int', integrated along the spectral axis.
-        statistic:      Either 'mean' or 'median'.
-        uncertainty:    Either 'stddev' or 'percentiles'.
-        PA_mask:        Only include values within [PA_min, PA_max].
-        excxlude_PA:    Exclude the values within [PA_min, PA_max]
-        beam_spacing:   Include the number of beams averaged over in the
-                        calculation of the uncertainty.
-        clip_values:    Clip values. If a single value is specified, clip all
-                        absolute values below this, otherwise, if two values
-                        are specified, clip values between these.
-        poisson_errors: If True, divide the uncertainy by sqrt(Npix).
-
-        - Output -
-
-        x:              Array of bin centers.
-        y:              Array of the requested bin statistics.
-        dy:             Array of the requested bin uncertainties.
+        Returns:
+            x (ndarray): Bin centers [arcsec].
+            y (ndarray): Bin statistics.
+            dy (ndarray): Bin uncertainties.
         """
 
         # Check variables are OK.
 
-        collapse = collapse.lower()
-        if collapse not in ['max', 'sum', 'int']:
-            raise ValueError("Must choose collpase method: max, sum, int.")
-
         statistic = statistic.lower()
         if statistic not in ['mean', 'median']:
             raise ValueError("Must choose statistic: mean or median.")
-
         uncertainty = uncertainty.lower()
         if uncertainty not in ['stddev', 'percentiles']:
             raise ValueError("Must choose uncertainty: stddev or percentiles.")
@@ -508,103 +512,41 @@ class imagecube:
 
         rbins, x = self._radial_sampling(rbins=rbins, rvals=rpnts)
 
-        # Cycle through the inner and outer radii to collapse the spectra.
+        # Collapse and bin the data.
 
-        y, dy = [], []
-        for r_min, r_max in zip(rbins[:-1], rbins[1:]):
+        dvals = self._collapse_cube(method=collapse, clip_values=clip_values)
+        rvals, tvals = self.disk_coordinates(x0=x0, y0=y0, inc=inc, PA=PA,
+                                             z0=z0, psi=psi, z1=z1, phi=phi,
+                                             tilt=tilt)[:2]
+        rvals, tvals, dvals = rvals.flatten(), tvals.flatten(), dvals.flatten()
 
-            # Get the annulus of points including beam sampling if needed.
+        if PA_min is not None or PA_max is not None:
+            mask = self.get_mask(x0=x0, y0=y0, inc=inc, PA=PA, z0=z0, psi=psi,
+                                 z1=z1, phi=phi, tilt=tilt, PA_min=PA_min,
+                                 PA_max=PA_max, exclude_PA=exclude_PA)
+            mask = mask.flatten()
+            rvals, tvals, dvals = rvals[mask], tvals[mask], dvals[mask]
 
-            spectra = self.get_annulus(r_min=r_min, r_max=r_max, PA_min=PA_min,
-                                       PA_max=PA_max, exclude_PA=exclude_PA,
-                                       x0=x0, y0=y0, inc=inc, PA=PA,
-                                       z_type=z_type, params=params,
-                                       nearest=nearest,
-                                       beam_spacing=beam_spacing,
-                                       return_theta=False)
+        # Radially bin the data.
 
-            # Collapse the (clipped) spectra if necessary.
+        ridxs = np.digitize(rvals, rbins)
+        if statistic == 'mean':
+            y = np.array([np.nanmean(dvals[ridxs == r])
+                          for r in range(rbins.size - 1)])
+        else:
+            y = np.array([np.nanmedian(dvals[ridxs == r])
+                          for r in range(rbins.size - 1)])
 
-            if spectra.ndim == 2:
-                if clip_values is not None:
-                    clip_values = np.atleast_1d(clip_values)
-                    spectra = np.where(spectra >= clip_values[-1],
-                                       spectra, np.nan)
-                    if clip_values.size == 2:
-                        spectra = np.where(spectra <= clip_values[0],
-                                           spectra, np.nan)
-
-                if collapse == 'max':
-                    spectra = np.nanmax(spectra, axis=1)
-                elif collapse == 'int':
-                    spectra = np.where(np.isfinite(spectra), spectra, 0.0)
-                    spectra = np.trapz(spectra, x=self.velax, axis=1)
-                else:
-                    spectra = np.nansum(spectra, axis=1)
-
-            # Calculate the statistics.
-
-            if statistic == 'mean':
-                y += [np.nanmean(spectra)]
-            else:
-                y += [np.nanmedian(spectra)]
-
-            if uncertainty == 'stddev':
-                dy += [np.nanstd(spectra)]
-            else:
-                pcnts = np.nanpercentile(spectra, [16, 50, 84])
-                dy += [[pcnts[1] - pcnts[0], pcnts[2] - pcnts[1]]]
-
-        # Apply the beam factor inccrease in uncertainty.
-
-        y, dy = np.squeeze(y), np.squeeze(dy)
-        if beam_spacing:
-            beam = float(beam_spacing) * self.bmaj
-            if poisson_errors:
-                try:
-                    dy /= np.sqrt(2. * np.pi * x / beam)
-                except ValueError:
-                    dy /= np.sqrt(2. * np.pi * x[:, None] / beam)
-                    dy = dy
+        if uncertainty == 'stddev':
+            dy = np.array([np.nanstd(dvals[ridxs == r])
+                           for r in range(rbins.size - 1)])
+        else:
+            dy = np.array([np.nanpercentile(dvals[ridxs == r], [16, 50, 84])
+                           for r in range(rbins.size - 1)])
+            dy = np.array([dy[1] - dy[0], dy[2] - dy[1]])
         return x, y, dy
 
-    def get_vrot(self, r_min, r_max, PA_min=None, PA_max=None,
-                 exclude_PA=False, x0=0.0, y0=0.0, inc=0.0, PA=0.0,
-                 z_type='thin', params=None, nearest=None, beam_spacing=True,
-                 method='dV', mstar=None, dist=None, **kwargs):
-        """
-        Calculate the rotation profile using the methods available with
-        eddy.
-        """
-
-        # Check that the method is appropriate.
-        if method.lower() not in ['dv', 'gp']:
-            raise ValueError("method must be 'dV' or 'GP'.")
-        method = method.lower()
-
-        # Get the annulus.
-        r_avg = np.average([r_min, r_max])
-        annulus = self.get_annulus(r_min=r_min, r_max=r_max, PA_min=PA_min,
-                                   PA_max=PA_max, exclude_PA=exclude_PA, x0=x0,
-                                   y0=y0, inc=inc, PA=PA, z_type=z_type,
-                                   params=params, nearest=nearest,
-                                   beam_spacing=beam_spacing, as_ensemble=True)
-
-        # Make a reference rotation value. If values not specified it can do
-        # this by itself but it sometimes (often) wrong.
-        if kwargs.get('vref') is None:
-            if np.logical_and(mstar is not None, dist is not None):
-                vref = self.keplerian_curve(r_avg, mstar=mstar, z_type=z_type,
-                                            params=params, dist=dist, inc=inc)
-                kwargs['vref'] = vref
-
-        # Return the fitting.
-        if method == 'gp':
-            return annulus.get_vrot_GP(**kwargs)
-        else:
-            return annulus.get_vrot_dV(**kwargs)
-
-    def _collapse_cube(self, method='max'):
+    def _collapse_cube(self, method='max', clip_values=None):
         """Collapse the cube to a 2D image using the requested method."""
         if self.data.ndim > 2:
             if method.lower() not in ['max', 'sum', 'int']:
@@ -618,7 +560,7 @@ class imagecube:
                 to_avg = np.trapz(to_avg, dx=abs(self.chan), axis=0)
         else:
             to_avg = self.data.copy()
-        return to_avg.flatten()
+        return to_avg
 
     def _radial_sampling(self, rbins=None, rvals=None):
         """Return default radial sampling if none are specified."""
@@ -736,115 +678,6 @@ class imagecube:
         """Simple integrated spectrum."""
         return np.array([np.nansum(chan) for chan in self.data])
 
-    def get_deprojected_spectra(self, rbins=None, rpnts=None, x0=0.0, y0=0.0,
-                                inc=0.0, PA=0.0, z_type='thin',
-                                nearest='north', params=None, vrot=None,
-                                mstar=None, dist=100., PA_min=None,
-                                PA_max=None, exclude_PA=False, resample=True,
-                                frequency=False):
-        """
-        Return the deprojected spectra using a velocity profile. If vrot is
-        specified, must be sampled at the rpnts values and assumed to already
-        have the projection (sin(i) component) applied. Otherwise a Keplerian
-        curve can be used (including accounting for the height).
-
-        - Input -
-
-        rbins:      Bin edges in [arcsec] for the binning.
-        rpnts:      Bin centers in [arcsec] for the binning.
-                    Note: Only specify either rpnts or rbins.
-        x0, y0:     Source centre offset in [arcsec].
-        inc, PA:    Source inlination and position angle, both in [degrees].
-        z_type:     Type of emission surface to assume. Must be 'thin',
-                    'conical' or 'flared'. See disk_coords() for more details.
-        nearest:    Which side of the disk is closer to the observer. Only
-                    necessary if z_type is not 'thin'.
-        params:     Parameters for the emission surface. See disk_coords() for
-                    more details.
-        vrot:       The rotation curve to use for the deprojection. It must be
-                    the same size rpnts (or rbins - 1).
-        mstar:      If specified will calculate an analytical rotation curve
-                    taking into account the height of the emission surface.
-        dist:       Distance to the source. Only required if mstar is not None.
-                    Note: Only specify either vrot or mstar.
-        PA_min:     Minimum PA (of disk polar coordinates) to include.
-        PA_max:     Maximum PA (of disk polar coordinates) to include.
-        exclude_PA: If true, exclude the region PA_min <= PA <= PA_max.
-        resample:   Bin the shifted spectra back down to the original velocity
-                    axes.
-        frequency:  If true, return the frequency in [Hz] rather than velocity.
-
-        - Output -
-
-        rpnts:      Radius of where spectra were extracted [au].
-        vrot:       Rotation velocity used for deprojection [m/s].
-        spectra:    Array of deprojected spectra containing the spectral axis,
-                    either velocity or frequency, and the intensity.
-        """
-
-        # Load up eddy.
-        try:
-            from eddy.eddy import ensemble
-        except:
-            raise ValueError("Cannot find the eddy package.")
-
-        # Set the radial sampling.
-
-        rbins, rpnts = self._radial_sampling(rbins=rbins, rvals=rpnts)
-
-        # Calculate the projected velocity profile. If mstar is provided, use
-        # an analytical keplerian profile including the emission surface. If
-        # vrot is provided, check whether it matches the class radial points,
-        # otherwise interpolate from the provided radii.
-
-        if vrot is None and mstar is None:
-            raise ValueError("Must specify either 'vrot' or 'mstar'.")
-
-        if vrot is not None and mstar is not None:
-            raise ValueError("Specify either 'vrot' or 'mstar', not both.")
-
-        if vrot is not None:
-            if vrot.ndim == 2:
-                if np.array_equal(vrot[0], rpnts):
-                    vrot = vrot[1]
-                else:
-                    from scipy.interpolate import interp1d
-                    vrot = interp1d(vrot[0], vrot[1], bounds_error=False,
-                                    fill_value='extrapolate')(rpnts)
-            elif vrot.size != rpnts.size:
-                raise ValueError("'vrot' must have same size as 'rpnts'.")
-            if self.verbose:
-                print("Using the user specified rotation velocity.")
-        else:
-            vrot = self.keplerian_curve(rpnts=rpnts, mstar=mstar,
-                                        z_type=z_type, params=params,
-                                        dist=dist) * np.sin(np.radians(inc))
-
-        # Cycle through the annuli and deproject them, returning a Numpy array.
-        deprojected = []
-        for r in range(1, rbins.size):
-            spectra, theta = self.get_annulus(r_min=rbins[r-1], r_max=rbins[r],
-                                              PA_min=PA_min, PA_max=PA_max,
-                                              exclude_PA=exclude_PA, x0=x0,
-                                              y0=y0, inc=inc, PA=PA,
-                                              z_type=z_type, params=params,
-                                              nearest=nearest,
-                                              return_theta=True)
-
-            # Deproject the annulus.
-            annulus = ensemble(spectra=spectra, theta=theta, velax=self.velax,
-                               suppress_warnings=0 if self.verbose else 1)
-            if resample:
-                specax, spectrum = annulus.deprojected_spectrum(vrot[r-1])
-            else:
-                specax, spectrum = annulus.deprojected_spectra(vrot[r-1])
-
-            # Convert to frequency if required.
-            if frequency:
-                specax = self._readrestfreq() * (1.0 - specax / sc.c)
-            deprojected += [[specax, spectrum]]
-        return rpnts, vrot, np.squeeze(deprojected)
-
     # == Rotation Functions == #
 
     def keplerian_profile(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=0.0,
@@ -858,9 +691,30 @@ class imagecube:
         vrot *= np.power(np.hypot(rvals, zvals) * sc.au * dist, -3.0)
         return np.sqrt(vrot) * np.cos(tvals) * np.sin(np.radians(inc)) + vlsr
 
-    def keplerian_curve(self, rpnts, mstar, z0=0.0, psi=1.0, z1=0.0, phi=1.0,
-                        dist=100., inc=90.0):
-        """Return a Keplerian rotation profile [m/s] at rpnts [arcsec]."""
+    def keplerian_curve(self, rpnts, mstar, dist, inc=90.0, z0=0.0, psi=1.0,
+                        z1=0.0, phi=1.0):
+        """
+        Return a Keplerian rotation profile [m/s] at rpnts [arcsec].
+
+        Args:
+            rpnts (ndarray/float): Radial locations in [arcsec] to calculate
+                the Keplerian rotation curve at.
+            mstar (float): Mass of the central star in [Msun].
+            dist (float): Distance to the source in [pc].
+            inc (Optional[float]): Inclination of the source in [deg]. If not
+                provided, will return the unprojected value.
+            z0 (Optional[float]): Aspect ratio at 1" for the emission surface.
+                To get the far side of the disk, make this number negative.
+            psi (Optional[float]): Flaring angle for the emission surface.
+            z1 (Optional[float]): Aspect ratio correction term at 1" for the
+                emission surface. Should be opposite sign to z0.
+            phi (Optional[float]): Flaring angle correction term for the
+                emission surface.
+
+        Returns:
+            vkep (ndarray/float): Keplerian rotation curve [m/s] at the
+                specified radial locations.
+        """
         rpnts = np.squeeze(rpnts)
         zpnts = z0 * np.power(rpnts, psi) + z1 * np.power(rpnts, phi)
         r_m, z_m = rpnts * dist * sc.au, zpnts * dist * sc.au
