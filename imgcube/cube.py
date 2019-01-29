@@ -10,8 +10,8 @@ class imagecube:
     msun = 1.988e30
     fwhm = 2. * np.sqrt(2 * np.log(2))
 
-    def __init__(self, path, kelvin=False, clip=None, resample=0, verbose=None,
-                 suppress_warnings=True, absolute=False, ):
+    def __init__(self, path, kelvin=False, clip=None, resample=1, verbose=None,
+                 suppress_warnings=True, absolute=False):
         """
         Load up a FITS image cube.
 
@@ -172,7 +172,10 @@ class imagecube:
         # some flexibility for more complex emission surface parameterizations.
 
         def func(r):
-            return z0 * np.power(r, psi) + z1 * np.power(r, phi)
+            z = z0 * np.power(r, psi) + z1 * np.power(r, phi)
+            if z0 >= 0.0:
+                return np.clip(z, a_min=0.0, a_max=None)
+            return np.clip(z, a_min=None, a_max=0.0)
 
         # Calculate the pixel values.
 
@@ -442,6 +445,26 @@ class imagecube:
                                                      PA, func, tilt)
         return r_mid * np.cos(t_mid), r_mid * np.sin(t_mid)
 
+    def clip_velocity(self, vmin=None, vmax=None):
+        """Clip the cube between (including) the defined velocity ranges."""
+        if self.velax is None:
+            raise AttributeError("Cannot clip a 2D cube.")
+        vmin = vmin if vmin is not None else self.velax.min()
+        vmax = vmax if vmax is not None else self.velax.max()
+        mask = np.logical_and(self.velax >= vmin, self.velax <= vmax)
+        self.data = self.data[mask]
+        self.velax = self.velax[mask]
+        self.freqax = self.freqax[mask]
+
+    def clip_frequency(self, fmin=None, fmax=None):
+        """Clip the cube between (including) the defined frequency ranges."""
+        fmin = fmin if fmin is not None else self.freqax.min()
+        fmax = fmax if fmax is not None else self.freqax.max()
+        mask = np.logical_and(self.freqax >= fmin, self.freqax <= fmax)
+        self.data = self.data[mask]
+        self.velax = self.velax[mask]
+        self.freqax = self.freqax[mask]
+
     # == Radial Profiles == #
 
     def radial_profile(self, rpnts=None, rbins=None, x0=0.0, y0=0.0, inc=0.0,
@@ -515,9 +538,8 @@ class imagecube:
         # Collapse and bin the data.
 
         dvals = self._collapse_cube(method=collapse, clip_values=clip_values)
-        rvals, tvals = self.disk_coordinates(x0=x0, y0=y0, inc=inc, PA=PA,
-                                             z0=z0, psi=psi, z1=z1, phi=phi,
-                                             tilt=tilt)[:2]
+        rvals, tvals = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA, z0=z0,
+                                        psi=psi, z1=z1, phi=phi, tilt=tilt)[:2]
         rvals, tvals, dvals = rvals.flatten(), tvals.flatten(), dvals.flatten()
 
         if PA_min is not None or PA_max is not None:
@@ -549,18 +571,29 @@ class imagecube:
     def _collapse_cube(self, method='max', clip_values=None):
         """Collapse the cube to a 2D image using the requested method."""
         if self.data.ndim > 2:
+            to_avg = self._clipped_noise(clip_values=clip_values, fill=0.0)
             if method.lower() not in ['max', 'sum', 'int']:
                 raise ValueError("Must choose collpase method: max, sum, int.")
             if method.lower() == 'max':
-                to_avg = np.amax(self.data, axis=0)
+                to_avg = np.nanmax(to_avg, axis=0)
             elif method.lower() == 'sum':
-                to_avg = np.nansum(self.data, axis=0)
+                to_avg = np.nansum(to_avg, axis=0)
             else:
-                to_avg = np.where(np.isfinite(self.data), self.data, 0.0)
                 to_avg = np.trapz(to_avg, dx=abs(self.chan), axis=0)
         else:
             to_avg = self.data.copy()
         return to_avg
+
+    def _clipped_noise(self, clip_values=None, fill=0.0):
+        """Returns a clipped self.data."""
+        if clip_values is None:
+            return self.data.copy()
+        clip_values = np.atleast_1d(clip_values)
+        if clip_values.size == 1:
+            clip_values = np.insert(clip_values, 0, -1e10)
+        mask = np.logical_and(self.data >= clip_values[0],
+                              self.data <= clip_values[1])
+        return np.where(mask, fill, self.data.copy())
 
     def _radial_sampling(self, rbins=None, rvals=None):
         """Return default radial sampling if none are specified."""
