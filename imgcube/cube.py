@@ -693,16 +693,52 @@ class imagecube:
         convolved_cube = [self._convolve_image(c, kernel, fast) for c in data]
         return np.squeeze(convolved_cube)
 
-    def plotbeam(self, ax, dx=0.125, dy=0.125, **kwargs):
-        """Plot the sythensized beam on the provided axes."""
+    def plotbeam(self, ax, x0=0.125, y0=0.125, **kwargs):
+        """
+        Plot the sythensized beam on the provided axes.
+
+        Args:
+            ax (matplotlib axes instance): Axes to plot the FWHM.
+            x0 (float): Relative x-location of the marker.
+            y0 (float): Relative y-location of the marker.
+            kwargs (dic): Additional kwargs for the style of the plotting.
+        """
         from matplotlib.patches import Ellipse
-        beam = Ellipse(ax.transLimits.inverted().transform((dx, dy)),
+        beam = Ellipse(ax.transLimits.inverted().transform((x0, y0)),
                        width=self.bmin, height=self.bmaj, angle=-self.bpa,
-                       fill=False, hatch=kwargs.get('hatch', '////////'),
-                       lw=kwargs.get('linewidth', kwargs.get('lw', 1)),
-                       color=kwargs.get('color', kwargs.get('c', 'k')),
-                       zorder=kwargs.get('zorder', 1000))
+                       fill=False, hatch=kwargs.pop('hatch', '////////'),
+                       lw=kwargs.pop('linewidth', kwargs.pop('lw', 1)),
+                       color=kwargs.pop('color', kwargs.pop('c', 'k')),
+                       zorder=kwargs.pop('zorder', 1000), **kwargs)
         ax.add_patch(beam)
+
+    def plotFWHM(self, ax, x0=0.125, y0=0.125, major=True,
+                 align='center', **kwargs):
+        """
+        Plot the synthesized beam FWHM on the provided axes.
+
+        Args:
+            ax (matplotlib axes instance): Axes to plot the FWHM.
+            x0 (float): Relative x-location of the marker.
+            y0 (float): Relative y-location of the marker.
+            major (bool): If True, plot the beam major axis, otherwise the
+                minor axis.
+            align (str): How to align the marker with respect to the provided
+                x0 value. Must be 'center' (default), 'left' or 'right'.
+            kwargs (dic): Additional kwargs for the style of the plotting.
+        """
+        x0, y0 = ax.transLimits.inverted().transform((x0, y0))
+        dx = 0.5 * self.bmaj if major else 0.5 * self.bmin
+        if align not in ['left', 'center', 'right']:
+            raise ValueError("align must be 'left', 'center' or 'right'.")
+        if align.lower() == 'left':
+            x0 += dx
+        elif align.lower() == 'right':
+            x0 -= dx
+        ax.errorbar(x0, y0, xerr=dx, fmt=' ',
+                    color=kwargs.pop('color', kwargs.pop('c', 'k')),
+                    capthick=kwargs.pop('capthick', 1.5),
+                    capsize=kwargs.pop('capsize', 1.25), **kwargs)
 
     # == Spectra Functions == #
 
