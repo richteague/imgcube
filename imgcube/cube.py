@@ -742,10 +742,39 @@ class imagecube:
 
     # == Spectra Functions == #
 
-    @property
-    def integrated_spectrum(self):
-        """Simple integrated spectrum."""
-        return np.array([np.nansum(chan) for chan in self.data])
+    def integrated_spectrum(self, r_min=None, r_max=None, clip_values=None):
+        """
+        Return an integrated spectrum in [Jy]. Will convert images in Tb to
+        Jy/beam using the full Planck law. This may cause some noise issues for
+        low SNR data.
+
+        Args:
+            r_min (Optional[float]): Inner radius in [arcsec] of the area to
+                integrate over. Note this is just a circular mask.
+            r_max (Optional[float]): Outer radius in [arcsec] of the area to
+                integrate over. Note this is just a circular mask.
+            clip_values (Optional[float/iterable]): Clip the data values. If a
+                single value is given, clip all values below this, if two
+                values are given, clip values between them.
+
+        Returns:
+            flux (ndarray): Array of the integrated flux in [Jy] values along
+                the attached velocity axis.
+        """
+        if self.data.ndim != 3:
+            raise ValueError("Cannot make a spectrum from a 2D image.")
+        mask = np.ones(self.data.shape)
+        if r_max is not None or r_min is not None:
+            rvals = np.hypot(self.xaxis[None, :], self.yaxis[:, None])
+            if r_max is not None:
+                mask = np.where(rvals[None, :, :] <= r_max, mask, 0)
+            if r_min is not None:
+                mask = np.where(rvals[None, :, :] >= r_min, mask, 0)
+        to_sum = self._clipped_noise(clip_values=clip_values)
+        if self.bunit.lower() == 'k':
+            to_sum = self._Tb_to_jybeam(data=to_sum)
+        to_sum /= self._calculate_beam_area_pix()
+        return np.array([np.nansum(c) for c in to_sum * mask])
 
     # == Rotation Functions == #
 
@@ -795,33 +824,45 @@ class imagecube:
 
     def CLEAN_mask(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=0.0, psi=1.0,
                    z1=0.0, phi=1.0, tilt=0.0, mstar=1.0, dist=100.,
-                   r_max=None, r_min=None, vlsr=0.0, dV0=050., dVq=-0.4,
+                   r_max=None, r_min=None, vlsr=0.0, dV0=500., dVq=-0.4,
                    nbeams=0.0, fname=None, fast=True, return_mask=False):
         """
-        Using the attached FITS cube, generate a Keplerian mask appropriate for
-        CLEANing in CASA. This also allows for 3D disks and the change in
-        rotation pattern associated with them. We additionally allow for a
-        radially varying linewidth.
+        Create a mask suitable for CLEANing the data. The flared emission
+        surface is described with the usual geometrical parameters (see
+        disk_coords for more). A radial profile for the line width is also
+        included such that
 
-        Input:
+            dV = dV0 * (r / 1")**dVq
 
-            x0, y0, inc, PA, z0, psi, z1, phi, tilt: Geometrical properties of
-                the disk and emission surface. For more details, see the
-                docstring for disk_coords().
-            mstar (float):
+        providing a little more flexibility to alter the mask shape in the
+        outer regions of the disk.
 
-            'thin'      : A geometrically thin disk.
-            'conical'   : A straight surface with params=psi where psi is the
-                          angle between the surface and the midplane in (deg).
-                          For 12CO, psi ~ 15deg.
-            'flared'    : A power-law surface with params=[z0, q] where z0 is
-                          the height of the surface at 1 arcsec and q is the
-                          power-law exponent. For 12CO, z0 ~ 0.3 and q ~ 1.2.
+        Args:
+            x0 (Optional[float]): Source right ascension offset [arcsec].
+            y0 (Optional[float]): Source declination offset [arcsec].
+            inc (Optional[float]): Source inclination [deg].
+            PA (Optional[float]): Source position angle [deg]. Measured
+                between north and the red-shifted semi-major axis in an
+                easterly direction.
+            z0 (Optional[float]): Aspect ratio at 1" for the emission surface.
+                To get the far side of the disk, make this number negative.
+            psi (Optional[float]): Flaring angle for the emission surface.
+            z1 (Optional[float]): Aspect ratio correction term at 1" for the
+                emission surface. Should be opposite sign to z0.
+            phi (Optional[float]): Flaring angle correction term for the
+                emission surface.
+            tilt (Optional[float]): Value between -1 and 1, describing the
+                rotation of the disk. For negative values, the disk is rotating
+                clockwise on the sky.
+            mstar (Optional[float]): Mass of the central starr in [Msun].
+            dist (Optional[float]): Distance to the source in [pc].
+            r_min (Optional[float]): Inner radius of the disk in [arcsec].
+            r_max (Optional[float]): Outer radius of the disk in [arcsec].
 
         Additionally we can change the local linewidth as a function of radius.
         This is simply a power-law function,
 
-            dV = dV0 * (r / 1")**dVq,
+
 
         and allows a little more flexibility in changing the width of the mask
         as a function of radius. Typical values would be dV0 ~ 250. and
@@ -876,6 +917,7 @@ class imagecube:
         # Include the beam smearing.
         if nbeams > 0.0:
             mask = self.convolve_cube(nbeams=nbeams, data=mask*1e2, fast=fast)
+            mask = np.where(mask >= 1e-2, 1, 0)
 
         # Return the mask if requested.
         if return_mask:
