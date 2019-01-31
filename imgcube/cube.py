@@ -595,6 +595,10 @@ class imagecube:
                               self.data <= clip_values[1])
         return np.where(mask, fill, self.data.copy())
 
+    def _estimate_RMS(self, N=5):
+        """Estimate the noise from the first and last N channels."""
+        return np.nanstd([self.data[:int(N)], self.data[-int(N):]])
+
     def _radial_sampling(self, rbins=None, rvals=None):
         """Return default radial sampling if none are specified."""
         if rbins is not None and rvals is not None:
@@ -924,6 +928,9 @@ class imagecube:
             return mask
 
         # Otherwise, save as a new FITS cube.
+        if np.diff(self._readvelocityaxis()).mean() < 0:
+            mask = mask[::-1]
+
         if fname is None:
             fname = self.path.replace('.fits', '.mask.fits')
         hdu = fits.open(self.path)
