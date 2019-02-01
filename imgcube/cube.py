@@ -862,47 +862,24 @@ class imagecube:
             dist (Optional[float]): Distance to the source in [pc].
             r_min (Optional[float]): Inner radius of the disk in [arcsec].
             r_max (Optional[float]): Outer radius of the disk in [arcsec].
+            vlsr (Optional[float]): Systemic velocity in [m/s].
+            dV0 (Optional[float]): Doppler line width at 1 arcsec in [m/s].
+            dVq (Optional[float]): Power-law exponent of the line width
+                profile. A value of 0 will result in dV which is constant.
+            nbeams (Optional[float]): The number of beams kernels to convolve
+                the mask with. For example, nbeams=1 will conolve the mask with
+                the attached beam, nbeams=2 will convolve it with a beam double
+                the size.
+            fname (Optional[str]): File name to save the mask to. If none is
+                specified, will use the same path but with a ''.mask.fits'
+                extension.
+            fast (Optional[bool]): If True, use the fast convolve from Astropy.
+            return_mask (Optional[bool]): If True, return the mask as an array,
+                otherwise, save it to a FITS file.
 
-        Additionally we can change the local linewidth as a function of radius.
-        This is simply a power-law function,
-
-
-
-        and allows a little more flexibility in changing the width of the mask
-        as a function of radius. Typical values would be dV0 ~ 250. and
-        dVq ~ 0.3.
-
-        - Inputs -
-
-        rbins:      Bin edges in [arcsec] for the binning.
-        rpnts:      Bin centers in [arcsec] for the binning.
-                    Note: Only specify either rpnts or rbins.
-        x0, y0:     Source centre offset in [arcsec].
-        inc, PA:    Source inlination and position angle, both in [degrees].
-        z_type:     Type of emission surface to assume. Must be 'thin',
-                    'conical' or 'flared'. See disk_coords() for more details.
-        nearest:    Which side of the disk is closer to the observer. Only
-                    necessary if z_type is not 'thin'.
-        params:     Parameters for the emission surface. See disk_coords() for
-                    more details.
-        mstar:      Stellar mass in [Msun].
-        dist:       Distance to the source in [pc].
-        r_min:      Minimum radius of the mask in [arcsec].
-        r_max:      Maximum radius of the mask in [arcsec].
-        vlsr:       Systemic velocity of the system in [m/s]. Can also be a
-                    list of values to allow for multiple lines / hyperfine
-                    transitions.
-        dV0, dVq:   Properties of the linewidth power-law profile.
-        nbeams:     Number of beams to convolve the mask with.
-        fast:       When convolving, whether to use the FFT method.
-        fname:      Filename for the saved FITS file. By default it changes the
-                    end from '*.fits' to '*.mask.fits'. Note it will overwrite
-                    any other files of the same name.
-        return_mask: If true, return the mask as a 3D array rather than saving.
-
-        - Outputs -
-
-        Coming Soon.
+            Returns:
+                mask (ndarray): If return_mask is True, will return a mask
+                matching the shape of the attached cube.
         """
 
         # Allow for multiple hyperfine components.
