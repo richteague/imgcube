@@ -632,6 +632,13 @@ class imagecube:
             self.bpa = 0.0
             self.beamarea = self.dpix**2.0
 
+    def _calculate_beam_area_arcsec(self):
+        """Beam area in square arcseconds."""
+        omega = self.bmin * self.bmaj
+        if self.bmin == self.dpix and self.bmaj == self.dpix:
+            return omega
+        return np.pi * omega / 4. / np.log(2.)
+
     def _calculate_beam_area_str(self):
         """Beam area in steradians."""
         omega = np.radians(self.bmin / 3600.)
@@ -640,12 +647,10 @@ class imagecube:
             return omega
         return np.pi * omega / 4. / np.log(2.)
 
-    def _calculate_beam_area_pix(self):
-        """Beam area in pix^2."""
-        omega = self.bmin * self.bmaj / np.power(self.dpix, 2)
-        if self.bmin == self.dpix and self.bmaj == self.dpix:
-            return omega
-        return np.pi * omega / 4. / np.log(2.)
+    @property
+    def pix_per_beam(self):
+        """Pixels per beam."""
+        return self._calculate_beam_area_arcsec() / np.power(self.dpix, 2.0)
 
     @property
     def beam_per_pix(self):
@@ -777,7 +782,7 @@ class imagecube:
         to_sum = self._clipped_noise(clip_values=clip_values)
         if self.bunit.lower() == 'k':
             to_sum = self._Tb_to_jybeam(data=to_sum)
-        to_sum /= self._calculate_beam_area_pix()
+        to_sum /= self.pix_per_beam
         return np.array([np.nansum(c) for c in to_sum * mask])
 
     # == Rotation Functions == #
@@ -1088,9 +1093,14 @@ class imagecube:
             return self._readspectralaxis(a)
         return self._readrestfreq() * (1.0 - self._readvelocityaxis() / sc.c)
 
-    def restframe_frequency(self, vlsr=0.0):
-        """Return the rest frame frequency."""
-        return self.nu * (1. - (self.velax - vlsr) / 2.998e8)
+    def restframe_frequency(self, vlsr=0.0, velax=None):
+        """Return the rest-frame frequency [Hz] of the given velocity [m/s]."""
+        velax = self.velax if velax is None else velax
+        return self.nu * (1. - (velax - vlsr) / 2.998e8)
+
+    def restframe_frequency_to_velocity(self, nu, vlsr=0.0):
+        """Return the velocity [m/s] of the given rest-frame frequency [Hz]."""
+        return 2.998e8 * (1. - nu / self.nu) + vlsr
 
     def _background_Tb(self, Tcmb=2.73):
         """Return the background brightness temperature for the CMB."""
