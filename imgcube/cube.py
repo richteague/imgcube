@@ -93,7 +93,7 @@ class imagecube:
         if self.bunit != 'k' and kelvin:
             if self.verbose:
                 print("WARNING: Converting to Kelvin.")
-            if type(kelvin) is str:
+            if isinstance(kelvin, str):
                 if kelvin.lower() in ['rj', 'rayleigh-jeans']:
                     if self.verbose:
                         print("\t Using the Rayleigh-Jeans approximation.")
@@ -626,7 +626,7 @@ class imagecube:
                 self.bmaj = self.header['bmaj'] * 3600.
                 self.bmin = self.header['bmin'] * 3600.
                 self.bpa = self.header['bpa']
-        except:
+        except Exception:
             self.bmaj = self.dpix
             self.bmin = self.dpix
             self.bpa = 0.0
@@ -685,7 +685,8 @@ class imagecube:
         k = np.power(x / dx, 2) + np.power(y / dy, 2)
         return np.exp(-0.5 * k) / 2. / np.pi / dx / dy
 
-    def _convolve_image(self, image, kernel, fast=True):
+    @staticmethod
+    def _convolve_image(image, kernel, fast=True):
         """Convolve the image with the provided kernel."""
         if fast:
             from astropy.convolution import convolve_fft
@@ -696,10 +697,12 @@ class imagecube:
     def convolve_cube(self, bmaj=None, bmin=None, bpa=None, nbeams=1.0,
                       fast=True, data=None):
         """Convolve the cube with a 2D Gaussian beam."""
-        if data is None:
-            data = self.data
-        kernel = self._beamkernel(bmaj=bmaj, bmin=bmin, bpa=bpa, nbeams=nbeams)
-        convolved_cube = [self._convolve_image(c, kernel, fast) for c in data]
+        data = self.data if data is None else data
+        bmaj = self.bmaj if bmaj is None else bmaj
+        bmin = self.bmin if bmin is None else bmin
+        bpa = self.bpa if bpa is None else bpa
+        k = self._beamkernel(bmaj=bmaj, bmin=bmin, bpa=bpa, nbeams=nbeams)
+        convolved_cube = [imagecube._convolve_image(c, k, fast) for c in data]
         return np.squeeze(convolved_cube)
 
     def plotbeam(self, ax, x0=0.125, y0=0.125, **kwargs):
