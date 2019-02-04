@@ -65,6 +65,7 @@ class imagecube:
                              abs(np.diff(self.yaxis))])
 
         # Spectral axis. Make sure velocity is increasing.
+        self.nu = self._readrestfreq()
         try:
             self.velax = self._readvelocityaxis()
             self.chan = np.mean(np.diff(self.velax))
@@ -88,7 +89,6 @@ class imagecube:
         # use the Rayleigh-Jeans approximation. If the approximation is not
         # used then the non-linearity of the conversion means the noise is
         # horrible.
-        self.nu = self._readrestfreq()
         self.bunit = self.header['bunit'].lower()
         if self.bunit != 'k' and kelvin:
             if self.verbose:
@@ -1080,8 +1080,8 @@ class imagecube:
         a = 4 if 'stokes' in self.header['ctype3'].lower() else 3
         if 'freq' in self.header['ctype%d' % a].lower():
             specax = self._readspectralaxis(a)
-            velax = (self.rest_frequency - specax) * sc.c
-            velax /= self.rest_frequency
+            velax = (self.nu - specax) * sc.c
+            velax /= self.nu
         else:
             velax = self._readspectralaxis(a)
         return velax
