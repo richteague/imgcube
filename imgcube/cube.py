@@ -1080,8 +1080,8 @@ class imagecube:
         a = 4 if 'stokes' in self.header['ctype3'].lower() else 3
         if 'freq' in self.header['ctype%d' % a].lower():
             specax = self._readspectralaxis(a)
-            nu = self._readrestfreq()
-            velax = (nu - specax) * sc.c / nu
+            velax = (self.rest_frequency - specax) * sc.c
+            velax /= self.rest_frequency
         else:
             velax = self._readspectralaxis(a)
         return velax
@@ -1093,9 +1093,20 @@ class imagecube:
             return self._readspectralaxis(a)
         return self._readrestfreq() * (1.0 - self._readvelocityaxis() / sc.c)
 
-    def restframe_frequency(self, vlsr=0.0, velax=None):
+    def velocity_resolution(self, dnu):
+        """Convert spectral resolution in [Hz] to [m/s]."""
+        v0 = self.restframe_frequency_to_velocity(self.nu)
+        v1 = self.restframe_frequency_to_velocity(self.nu + dnu)
+        return max(v0, v1) - min(v0, v1)
+
+    def spectral_resolution(self, dV):
+        """Convert velocity resolution [m/s] to [Hz]."""
+        nu = self.velocity_to_restframe_frequency(velax=[0.0, dV])
+        return abs(nu[0] - nu[1])
+
+    def velocity_to_restframe_frequency(self, velax=None, vlsr=0.0):
         """Return the rest-frame frequency [Hz] of the given velocity [m/s]."""
-        velax = self.velax if velax is None else velax
+        velax = self.velax if velax is None else np.squeeze(velax)
         return self.nu * (1. - (velax - vlsr) / 2.998e8)
 
     def restframe_frequency_to_velocity(self, nu, vlsr=0.0):
