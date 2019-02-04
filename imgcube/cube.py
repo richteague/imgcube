@@ -368,7 +368,7 @@ class imagecube:
                                                   phi=phi, tilt=tilt,
                                                   frame='cartesian')[:2]
         xdisk_grid, ydisk_grid = xdisk_grid.flatten(), ydisk_grid.flatten()
-        xsky_grid, ysky_grid = self._get_cart_sky_coords()[:2]
+        xsky_grid, ysky_grid = self._get_cart_sky_coords(x0=x0, y0=y0)[:2]
         xsky_grid, ysky_grid = xsky_grid.flatten(), ysky_grid.flatten()
 
         xsky = griddata((xdisk_grid, ydisk_grid), xsky_grid, (xdisk, ydisk),
@@ -376,7 +376,7 @@ class imagecube:
                         fill_value=np.nan)
         ysky = griddata((xdisk_grid, ydisk_grid), ysky_grid, (xdisk, ydisk),
                         method='nearest' if return_idx else 'linear',
-                        ffill_value=np.nan)
+                        fill_value=np.nan)
 
         # Return the values or calculate the indices.
 
