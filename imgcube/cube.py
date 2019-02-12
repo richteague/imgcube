@@ -300,6 +300,87 @@ class imagecube:
                            sort_spectra=sort_spectra)
         return dvals, tvals
 
+    def sky_to_disk(self, coords, frame_in='polar', frame_out='polar', x0=0.0,
+                    y0=0.0, inc=0.0, PA=0.0, z0=0.0, psi=1.0, z1=0.0, phi=0.0,
+                    tilt=0.0):
+        """
+        For ther given sky coordinates, either (r, theta) or (x, y),
+        return the interpolated disk coordiantes in either (r, theta) or (x, y)
+        for plotting.
+
+        Args:
+            coords (list): Midplane coordaintes to find in (x, y) in [arcsec,
+                arcsec] or (r, theta) in [arcsec, deg].
+            frame_in (Optional[str]): Frame of input coordinates, either
+                'cartesian' or 'polar'.
+            frame_out (Optional[str]): Frame of the output coordinates, either
+                'cartesian' or 'polar'.
+            x0 (Optional[float]): Source right ascension offset [arcsec].
+            y0 (Optional[float]): Source declination offset [arcsec].
+            inc (Optional[float]): Source inclination [deg].
+            PA (Optional[float]): Source position angle [deg]. Measured
+                between north and the red-shifted semi-major axis in an
+                easterly direction.
+            z0 (Optional[float]): Aspect ratio at 1" for the emission surface.
+                To get the far side of the disk, make this number negative.
+            psi (Optional[float]): Flaring angle for the emission surface.
+            z1 (Optional[float]): Aspect ratio correction term at 1" for the
+                emission surface. Should be opposite sign to z0.
+            phi (Optional[float]): Flaring angle correction term for the
+                emission surface.
+            tilt (Optional[float]): Value between -1 and 1, describing the
+                rotation of the disk. For negative values, the disk is rotating
+                clockwise on the sky.
+
+        Returns:
+            x (float): The disk frame x-coordinate in [arcsec].
+            y (float): The disk frame y-coordinate in [arcsec].
+        """
+
+        # Import the necessary module.
+
+        try:
+            from scipy.interpolate import griddata
+        except Exception:
+            raise ValueError("Can't find 'scipy.interpolate.griddata'.")
+
+        # Check the input and output frames.
+
+        frame_in = frame_in.lower()
+        frame_out = frame_out.lower()
+        for frame in [frame_in, frame_out]:
+            if frame not in ['polar', 'cartesian']:
+                raise ValueError("Frame must be 'polar' or 'cartesian'.")
+
+        # Make sure input coords are cartesian.
+
+        coords = np.atleast_2d(coords)
+        if coords.shape[0] != 2 and coords.shape[1] == 2:
+            coords = coords.T
+        if coords.shape[0] != 2:
+            raise ValueError("coords must be of shape [2 x N].")
+        if frame_in == 'polar':
+            xsky = coords[0] * np.cos(np.radians(coords[1]))
+            ysky = coords[0] * np.sin(np.radians(coords[1]))
+        else:
+            xsky, ysky = coords
+
+        # Convert to disk coordinates.
+
+        xdisk, ydisk, _ = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA, z0=z0,
+                                           psi=psi, z1=z1, phi=phi, tilt=tilt,
+                                           frame='cartesian')
+        xdisk, ydisk = xdisk.flatten(), ydisk.flatten()
+        x_pix = (np.ones(xdisk.shape) * self.xaxis[None, :]).flatten()
+        y_pix = (np.ones(ydisk.shape) * self.xaxis[:, None]).flatten()
+        x_int = griddata((x_pix, y_pix), xdisk, (xdisk, ydisk))
+        y_int = griddata((x_pix, y_pix), ydisk, (xdisk, ydisk))
+
+        # Convert to output frame.
+        if frame_out == 'cartesian':
+            return x_int, y_int
+        return np.hypot(x_int, y_int), np.arctan2(y_int, x_int)
+
     def disk_to_sky(self, coords, frame='polar', x0=0.0, y0=0.0, inc=0.0,
                     PA=0.0, z0=0.0, psi=1.0, z1=0.0, phi=0.0, tilt=0.0,
                     return_idx=False):
@@ -1100,12 +1181,15 @@ class imagecube:
         """Convert spectral resolution in [Hz] to [m/s]."""
         v0 = self.restframe_frequency_to_velocity(self.nu)
         v1 = self.restframe_frequency_to_velocity(self.nu + dnu)
-        return max(v0, v1) - min(v0, v1)
+        vA = max(v0, v1) - min(v0, v1)
+        v1 = self.restframe_frequency_to_velocity(self.nu - dnu)
+        vB = max(v0, v1) - min(v0, v1)
+        return np.mean([vA, vB])
 
     def spectral_resolution(self, dV):
         """Convert velocity resolution [m/s] to [Hz]."""
-        nu = self.velocity_to_restframe_frequency(velax=[0.0, dV])
-        return abs(nu[0] - nu[1])
+        nu = self.velocity_to_restframe_frequency(velax=[-dV, 0.0, dV])
+        return np.mean([abs(nu[1] - nu[0]), abs(nu[2] - nu[1])])
 
     def velocity_to_restframe_frequency(self, velax=None, vlsr=0.0):
         """Return the rest-frame frequency [Hz] of the given velocity [m/s]."""
