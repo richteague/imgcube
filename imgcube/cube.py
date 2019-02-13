@@ -373,8 +373,8 @@ class imagecube:
         xdisk, ydisk = xdisk.flatten(), ydisk.flatten()
         x_pix = (np.ones(xdisk.shape) * self.xaxis[None, :]).flatten()
         y_pix = (np.ones(ydisk.shape) * self.xaxis[:, None]).flatten()
-        x_int = griddata((x_pix, y_pix), xdisk, (xdisk, ydisk))
-        y_int = griddata((x_pix, y_pix), ydisk, (xdisk, ydisk))
+        x_int = griddata((x_pix, y_pix), xdisk, (xsky, ysky))
+        y_int = griddata((x_pix, y_pix), ydisk, (xsky, ysky))
 
         # Convert to output frame.
         if frame_out == 'cartesian':
