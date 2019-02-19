@@ -552,7 +552,7 @@ class imagecube:
                        PA=0.0, z0=0.0, psi=1.0, z1=0.0, phi=1.0, tilt=0.0,
                        PA_min=None, PA_max=None, exclude_PA=False,
                        beam_spacing=False, collapse='max', clip_values=None,
-                       statistic='mean', uncertainty='stddev'):
+                       statistic='mean', uncertainty='stddev', **kwargs):
         """
         Returns a radial profile of the data. If the data is 3D, then it is
         collapsed along the spectral axis with some provided function.
@@ -786,6 +786,8 @@ class imagecube:
         convolved_cube = [imagecube._convolve_image(c, k, fast) for c in data]
         return np.squeeze(convolved_cube)
 
+    # == Plotting Functions == #
+
     def plotbeam(self, ax, x0=0.125, y0=0.125, **kwargs):
         """
         Plot the sythensized beam on the provided axes.
@@ -832,6 +834,101 @@ class imagecube:
                     color=kwargs.pop('color', kwargs.pop('c', 'k')),
                     capthick=kwargs.pop('capthick', 1.5),
                     capsize=kwargs.pop('capsize', 1.25), **kwargs)
+
+    def plot_surface(self, ax=None, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=0.0,
+                     psi=0.0, z1=0.0, phi=1.0, tilt=0.0, r_min=0.0, r_max=None,
+                     ntheta=9, nrad=10, check_mask=True,
+                     **kwargs):
+        """
+        Overplot the emission surface onto an axis.
+
+        Args:
+            ax (Optional[AxesSubplot]): Axis to plot onto.
+            x0 (Optional[float]): Source right ascension offset [arcsec].
+            y0 (Optional[float]): Source declination offset [arcsec].
+            inc (Optional[float]): Source inclination [deg].
+            PA (Optional[float]): Source position angle [deg]. Measured
+                between north and the red-shifted semi-major axis in an
+                easterly direction.
+            z0 (Optional[float]): Aspect ratio at 1" for the emission surface.
+                To get the far side of the disk, make this number negative.
+            psi (Optional[float]): Flaring angle for the emission surface.
+            z1 (Optional[float]): Aspect ratio correction term at 1" for the
+                emission surface. Should be opposite sign to z0.
+            phi (Optional[float]): Flaring angle correction term for the
+                emission surface.
+            tilt (Optional[float]): Value between -1 and 1, describing the
+                rotation of the disk. For negative values, the disk is rotating
+                clockwise on the sky.
+            r_min (Optional[float]): Inner radius to plot, default is 0.
+            r_max (Optional[float]): Outer radius to plot.
+            ntheta (Optional[int]): Number of theta contours to plot.
+            nrad (Optional[int]): Number of radial contours to plot.
+            check_mask (Optional[bool]): Mask regions which are like projection
+                errors for highly flared surfaces.
+
+        Returns:
+            ax (AxesSubplot): Axis with the contours overplotted.
+        """
+
+        # Dummy axis to overplot.
+        if ax is None:
+            import matplotlib.pyplot as plt
+            ax = plt.subplots()[1]
+
+        # Front half of the disk.
+        rf, tf, zf = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA, z0=z0,
+                                      psi=psi, z1=z1, phi=phi, tilt=tilt)
+        rf = np.where(zf >= 0.0, rf, np.nan)
+        tf = np.where(zf >= 0.0, tf, np.nan)
+
+        # Rear half of the disk.
+        rb, tb, zb = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA, z0=-z0,
+                                      psi=psi, z1=-z1, phi=phi, tilt=tilt)
+        rb = np.where(zb <= 0.0, rb, np.nan)
+        tb = np.where(zb <= 0.0, tb, np.nan)
+
+        # Flat disk for masking.
+        rr, tt, _ = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA)
+
+        # Make sure the bounds are OK.
+        r_min = 0.0 if r_min is None else r_min
+        r_max = rr.max() if r_max is None else r_max
+
+        # Make sure the front side hides the rear.
+        mf = np.logical_and(rf >= r_min, rf <= r_max)
+        mb = np.logical_and(rb >= r_min, rb <= r_max)
+        tf = np.where(mf, tf, np.nan)
+        rb = np.where(~mf, rb, np.nan)
+        tb = np.where(np.logical_and(np.isfinite(rb), mb), tb, np.nan)
+
+        # For some geometries we want to make sure they're not doing funky
+        # things in the outer disk when psi is large.
+        if check_mask:
+            mm = rr <= check_mask * r_max
+            rf = np.where(mm, rf, np.nan)
+            rb = np.where(mm, rb, np.nan)
+            tf = np.where(mm, tf, np.nan)
+            tb = np.where(mm, tb, np.nan)
+
+        # Popluate the kwargs with defaults.
+        lw = kwargs.pop('lw', kwargs.pop('linewidth', 0.5))
+        zo = kwargs.pop('zorder', 10000)
+        c = kwargs.pop('colors', kwargs.pop('c', 'k'))
+
+        radii = np.linspace(0, r_max, int(nrad + 1))[1:]
+        theta = np.linspace(-np.pi, np.pi, int(ntheta + 1))[:-1]
+
+        # Do the plotting.
+        ax.contour(self.xaxis, self.yaxis, rf, levels=radii, colors=c,
+                   linewidths=lw, linestyles='-', zorder=zo, **kwargs)
+        ax.contour(self.xaxis, self.yaxis, tf, levels=theta, colors=c,
+                   linewidths=lw, linestyles='-', zorder=zo, **kwargs)
+        ax.contour(self.xaxis, self.yaxis, rb, levels=radii, colors=c,
+                   linewidths=lw, linestyles='--', zorder=zo, **kwargs)
+        ax.contour(self.xaxis, self.yaxis, tb, levels=theta, colors=c,
+                   linewidths=lw, linestyles='--', zorder=zo)
+        return ax
 
     # == Spectra Functions == #
 
