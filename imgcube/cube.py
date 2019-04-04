@@ -89,7 +89,11 @@ class imagecube:
         # use the Rayleigh-Jeans approximation. If the approximation is not
         # used then the non-linearity of the conversion means the noise is
         # horrible.
-        self.bunit = self.header['bunit'].lower()
+        try:
+            self.bunit = self.header['bunit'].lower()
+        except:
+            self.header['bunit'] = 'jy/beam'
+            self.bunit = 'jy/beam'
         if self.bunit != 'k' and kelvin:
             if self.verbose:
                 print("WARNING: Converting to Kelvin.")
@@ -167,6 +171,8 @@ class imagecube:
         frame = frame.lower()
         if frame not in ['cartesian', 'polar']:
             raise ValueError("frame must be 'cartesian' or 'polar'.")
+        if z0 != 0.0 and tilt == 0.0:
+            raise ValueError("must provide tilt for 3D surfaces.")
 
         # Define the emission surface function. This approach should leave
         # some flexibility for more complex emission surface parameterizations.
@@ -299,6 +305,55 @@ class imagecube:
                            remove_empty=remove_empty,
                            sort_spectra=sort_spectra)
         return dvals, tvals
+
+    def get_vlos(self, r_min, r_max, PA_min=None, PA_max=None,
+                 exclude_PA=False, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=0.0,
+                 psi=1.0, z1=0.0, phi=1.0, tilt=0.0, beam_spacing=True,
+                 options=None):
+        """
+        Wrapper for the `get_vlos` function in eddy.fit_annulus.
+            r_min (float): Minimum midplane radius of the annulus in [arcsec].
+            r_max (float): Maximum midplane radius of the annulus in [arcsec].
+            PA_min (Optional[float]): Minimum polar angle of the segment of the
+                annulus in [degrees]. Note this is the polar angle, not the
+                position angle.
+            PA_max (Optional[float]): Maximum polar angle of the segment of the
+                annulus in [degrees]. Note this is the polar angle, not the
+                position angle.
+            exclude_PA (Optional[bool]): If True, exclude the provided polar
+                angle range rather than include.
+            x0 (Optional[float]): Source right ascension offset [arcsec].
+            y0 (Optional[float]): Source declination offset [arcsec].
+            inc (Optional[float]): Source inclination [deg].
+            PA (Optional[float]): Source position angle [deg]. Measured
+                between north and the red-shifted semi-major axis in an
+                easterly direction.
+            z0 (Optional[float]): Aspect ratio at 1" for the emission surface.
+                To get the far side of the disk, make this number negative.
+            psi (Optional[float]): Flaring angle for the emission surface.
+            z1 (Optional[float]): Aspect ratio correction term at 1" for the
+                emission surface. Should be opposite sign to z0.
+            phi (Optional[float]): Flaring angle correction term for the
+                emission surface.
+            tilt (Optional[float]): Value between -1 and 1, describing the
+                rotation of the disk. For negative values, the disk is rotating
+                clockwise on the sky.
+            beam_spacing (Optional[bool/float]): If True, randomly sample the
+                annulus such that each pixel is at least a beam FWHM apart. A
+                number can also be used in place of a boolean which will
+                describe the number of beam FWHMs to separate each sample by.
+            options (Optional[dict]): Dictionary of options for `get_vlos`.
+
+        Returns:
+            TBD
+        """
+        annulus = self.get_annulus(r_min=r_min, r_max=r_max, PA_min=PA_min,
+                                   PA_max=PA_max, exclude_PA=exclude_PA, x0=x0,
+                                   y0=y0, inc=inc, PA=PA, z0=z0, psi=psi,
+                                   z1=z1, phi=phi, tilt=tilt,
+                                   beam_spacing=beam_spacing, as_ensemble=True)
+        options = {} if options is None else options
+        return annulus.get_vlos(**options)
 
     def sky_to_disk(self, coords, frame_in='polar', frame_out='polar', x0=0.0,
                     y0=0.0, inc=0.0, PA=0.0, z0=0.0, psi=1.0, z1=0.0, phi=0.0,
@@ -470,6 +525,30 @@ class imagecube:
         xidx = xidx if xidx.size > 1 else xidx[0]
         yidx = yidx if yidx.size > 1 else yidx[0]
         return xidx, yidx
+
+    def polar_projection(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=0.0,
+                         psi=0.0, z1=0.0, phi=1.0, tilt=0.0, method='linear',
+                         rgrid=None, tgrid=None):
+        """Deproject the data into polar coordinates."""
+        from scipy.interpolate import griddata
+        if self.data.ndim > 2:
+            raise ValueError("Must collapse the data.")
+        rvals, tvals = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA, z0=z0,
+                                        psi=psi, z1=z1, phi=phi, tilt=tilt)[:2]
+        rvals, tvals = rvals.flatten(), tvals.flatten()
+        dvals = self.data.flatten()
+
+        rgrid = rgrid if rgrid is not None else self._radial_sampling()[1]
+        tgrid = tgrid if tgrid is not None else np.linspace(-np.pi, np.pi, 180)
+
+        # Add extra arrays to reach the edges.
+        # TODO: only had on +\- 2 * diff(tgrid).
+        rvals = np.concatenate([rvals, rvals, rvals])
+        tvals = np.concatenate([tvals - 2. * np.pi, tvals, tvals + 2. * np.pi])
+        dvals = np.concatenate([dvals, dvals, dvals])
+
+        return griddata((rvals, tvals), dvals,
+                        (rgrid[None, :], tgrid[:, None]), method=method)
 
     def _estimate_PA(self, clip=95):
         """Estimate the PA in [deg] of the disk."""
@@ -678,7 +757,12 @@ class imagecube:
 
     def _estimate_RMS(self, N=5):
         """Estimate the noise from the first and last N channels."""
-        return np.nanstd([self.data[:int(N)], self.data[-int(N):]])
+        sx, fx = np.percentile(np.arange(self.xaxis.size),
+                               [25, 75]).astype('int')
+        sy, fy = np.percentile(np.arange(self.yaxis.size),
+                               [25, 75]).astype('int')
+        return np.nanstd([self.data[:int(N), sy:fy, sx:fx],
+                          self.data[-int(N):, sy:fy, sx:fx]])
 
     def _radial_sampling(self, rbins=None, rvals=None):
         """Return default radial sampling if none are specified."""
@@ -786,6 +870,57 @@ class imagecube:
         convolved_cube = [imagecube._convolve_image(c, k, fast) for c in data]
         return np.squeeze(convolved_cube)
 
+def add_correlated_noise(rms, bmaj, bmin=None, bpa=0.0, nchan=2):
+    """Add the output of correlated_nosie() directly to self.data."""
+    self.data += self.correlated_noise(rms=rms, bmaj=bmaj, bmin=bmin, bpa=bpa,
+                                       nchan=nchan)
+
+def correlated_noise(rms, bmaj, bmin=None, bpa=0.0, nchan=2):
+    """
+    Generate a 3D cube of spatially and spectrall correlated noise, following
+    function from Ryan Loomis. TODO: Allow for a user-defined kernel for the
+    spectral convolution.
+
+    Args:
+        rms (float): Desired RMS of the noise.
+        bmaj (float): Beam major axis for the spatial convolution in [arcsec].
+        bmin (optional[float]): Beam minor axis for the spatial convolution in
+            [arcsec]. If no value is provided we assume a circular beam.
+        bpa (optional[float]): Position angle of the beam, east of north in
+            [degrees]. This is not required for a circular beam.
+        nchan (optional[int]): Width of Hanning kernel for spectral
+            convolution. By default this is 2.
+
+    Returns:
+        noise (ndarray[float]): An array of noise with the same shape of the
+            data with a standard deviation provided.
+    """
+
+    # Default to circular beam.
+    bmin = bmaj if bmin is None else bmin
+
+    # Make random noise.
+    noise = np.random.normal(size=self.data.size).reshape(self.data.shape)
+
+    # Convolve it along the channels.
+    kernel = np.hanning(nchan + 2)
+    kernel /= np.sum(kernel)
+    if np.isfinite(kernel).all() and self.data.ndim == 3:
+        noise = np.array([[np.convolve(noise[:, i, j], kernel, mode='same')
+                           for i in range(noise.shape[1])]
+                          for j in range(noise.shape[2])]).T
+
+    # Convolve it spatially.
+    if bmaj > 0.0:
+        kernel = cube._beamkernel(bmaj=bmaj, bmin=bmin, bpa=bpa)
+        if self.data.ndim == 3:
+            noise = np.array([cube._convolve_image(c, kernel) for c in noise])
+        else:
+            noise = cube._convolve_image(noise, kernel)
+
+    # Rescale the noise.
+    return noise * rms / np.std(noise)
+
     # == Plotting Functions == #
 
     def plotbeam(self, ax, x0=0.125, y0=0.125, **kwargs):
@@ -837,8 +972,7 @@ class imagecube:
 
     def plot_surface(self, ax=None, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=0.0,
                      psi=0.0, z1=0.0, phi=1.0, tilt=0.0, r_min=0.0, r_max=None,
-                     ntheta=9, nrad=10, check_mask=True,
-                     **kwargs):
+                     ntheta=9, nrad=10, check_mask=True, **kwargs):
         """
         Overplot the emission surface onto an axis.
 
@@ -930,6 +1064,13 @@ class imagecube:
                    linewidths=lw, linestyles='--', zorder=zo)
         return ax
 
+    def polar_plot(self, ax=None, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=0.0,
+                   psi=0.0, z1=0.0, phi=1.0, tilt=0.0):
+        """
+        What.
+        """
+        return
+
     # == Spectra Functions == #
 
     def integrated_spectrum(self, r_min=None, r_max=None, clip_values=None):
@@ -965,6 +1106,38 @@ class imagecube:
             to_sum = self._Tb_to_jybeam(data=to_sum)
         to_sum /= self.pix_per_beam
         return np.array([np.nansum(c) for c in to_sum * mask])
+
+    def get_deprojected_spectrum(self, r_min, r_max, PA_min=None, PA_max=None,
+                                 exclude_PA=False, x0=0.0, y0=0.0, inc=0.0,
+                                 PA=0.0, z0=0.0, psi=1.0, z1=0.0, phi=1.0,
+                                 tilt=0.0, beam_spacing=False, mstar=1.0,
+                                 dist=100., vrot=None, vrad=0., resample=True):
+        """
+        Return the azimuthally averaged spectrum from an annulus described by
+        r_min and r_max. The spectra can be deprojected assuming either
+        Keplerian rotation or with the provided vrot and vrad values.
+
+        Args:
+
+        Returns:
+            x (ndarray[float]): Spectral axis of the deprojected spectrum.
+            y (ndarray[float]): Spectrum, either flux density or brightness
+                temperature depending on the units of the cube.
+            dy (ndarray[float]): Uncertainty on each y value based on the
+                scatter in the resampled bins.
+        """
+        annulus = self.get_annulus(r_min=r_min, r_max=r_max, PA_min=PA_min,
+                                   PA_max=PA_max, exclude_PA=exclude_PA, x0=x0,
+                                   y0=y0, inc=inc, PA=PA, z0=z0, psi=psi,
+                                   z1=z1, phi=phi, tilt=tilt, as_ensemble=True,
+                                   beam_spacing=beam_spacing)
+        if vrot is None:
+            vrot = self.keplerian_curve(rpnts=np.average([r_min, r_max]),
+                                        mstar=mstar, dist=dist, inc=inc, z0=z0,
+                                        psi=psi, z1=z1, phi=phi)
+        vlos = annulus.calc_vlos(vrot=vrot, vrad=vrad)
+        return annulus.deprojected_spectrum(vlos, resample=resample,
+                                            scatter=True)
 
     # == Rotation Functions == #
 
