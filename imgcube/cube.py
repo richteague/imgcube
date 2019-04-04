@@ -870,56 +870,58 @@ class imagecube:
         convolved_cube = [imagecube._convolve_image(c, k, fast) for c in data]
         return np.squeeze(convolved_cube)
 
-def add_correlated_noise(rms, bmaj, bmin=None, bpa=0.0, nchan=2):
-    """Add the output of correlated_nosie() directly to self.data."""
-    self.data += self.correlated_noise(rms=rms, bmaj=bmaj, bmin=bmin, bpa=bpa,
-                                       nchan=nchan)
+    def add_correlated_noise(self, rms, bmaj, bmin=None, bpa=0.0, nchan=2):
+        """Add the output of correlated_nosie() directly to self.data."""
+        self.data += self.correlated_noise(rms=rms, bmaj=bmaj, bmin=bmin, bpa=bpa,
+                                           nchan=nchan)
 
-def correlated_noise(rms, bmaj, bmin=None, bpa=0.0, nchan=2):
-    """
-    Generate a 3D cube of spatially and spectrall correlated noise, following
-    function from Ryan Loomis. TODO: Allow for a user-defined kernel for the
-    spectral convolution.
+    def correlated_noise(self, rms, bmaj, bmin=None, bpa=0.0, nchan=2):
+        """
+        Generate a 3D cube of spatially and spectrall correlated noise,
+        following function from Ryan Loomis. TODO: Allow for a user-defined
+        kernel for the spectral convolution.
 
-    Args:
-        rms (float): Desired RMS of the noise.
-        bmaj (float): Beam major axis for the spatial convolution in [arcsec].
-        bmin (optional[float]): Beam minor axis for the spatial convolution in
-            [arcsec]. If no value is provided we assume a circular beam.
-        bpa (optional[float]): Position angle of the beam, east of north in
-            [degrees]. This is not required for a circular beam.
-        nchan (optional[int]): Width of Hanning kernel for spectral
-            convolution. By default this is 2.
+        Args:
+            rms (float): Desired RMS of the noise.
+            bmaj (float): Beam major axis for the spatial convolution in
+                [arcsec].
+            bmin (optional[float]): Beam minor axis for the spatial convolution
+                in [arcsec]. If no value is provided we assume a circular beam.
+            bpa (optional[float]): Position angle of the beam, east of north in
+                [degrees]. This is not required for a circular beam.
+            nchan (optional[int]): Width of Hanning kernel for spectral
+                convolution. By default this is 2.
 
-    Returns:
-        noise (ndarray[float]): An array of noise with the same shape of the
-            data with a standard deviation provided.
-    """
+        Returns:
+            noise (ndarray[float]): An array of noise with the same shape of
+                the data with a standard deviation provided.
+        """
 
-    # Default to circular beam.
-    bmin = bmaj if bmin is None else bmin
+        # Default to circular beam.
+        bmin = bmaj if bmin is None else bmin
 
-    # Make random noise.
-    noise = np.random.normal(size=self.data.size).reshape(self.data.shape)
+        # Make random noise.
+        noise = np.random.normal(size=self.data.size).reshape(self.data.shape)
 
-    # Convolve it along the channels.
-    kernel = np.hanning(nchan + 2)
-    kernel /= np.sum(kernel)
-    if np.isfinite(kernel).all() and self.data.ndim == 3:
-        noise = np.array([[np.convolve(noise[:, i, j], kernel, mode='same')
-                           for i in range(noise.shape[1])]
-                          for j in range(noise.shape[2])]).T
+        # Convolve it along the channels.
+        kernel = np.hanning(nchan + 2)
+        kernel /= np.sum(kernel)
+        if np.isfinite(kernel).all() and self.data.ndim == 3:
+            noise = np.array([[np.convolve(noise[:, i, j], kernel, mode='same')
+                               for i in range(noise.shape[1])]
+                              for j in range(noise.shape[2])]).T
 
-    # Convolve it spatially.
-    if bmaj > 0.0:
-        kernel = cube._beamkernel(bmaj=bmaj, bmin=bmin, bpa=bpa)
-        if self.data.ndim == 3:
-            noise = np.array([cube._convolve_image(c, kernel) for c in noise])
-        else:
-            noise = cube._convolve_image(noise, kernel)
+        # Convolve it spatially.
+        if bmaj > 0.0:
+            kernel = cube._beamkernel(bmaj=bmaj, bmin=bmin, bpa=bpa)
+            if self.data.ndim == 3:
+                noise = np.array([cube._convolve_image(c, kernel)
+                                  for c in noise])
+            else:
+                noise = cube._convolve_image(noise, kernel)
 
-    # Rescale the noise.
-    return noise * rms / np.std(noise)
+        # Rescale the noise.
+        return noise * rms / np.std(noise)
 
     # == Plotting Functions == #
 
