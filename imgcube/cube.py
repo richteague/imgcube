@@ -425,16 +425,17 @@ class imagecube:
         xdisk, ydisk, _ = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA, z0=z0,
                                            psi=psi, z1=z1, phi=phi, tilt=tilt,
                                            frame='cartesian')
-        xdisk, ydisk = xdisk.flatten(), ydisk.flatten()
-        x_pix = (np.ones(xdisk.shape) * self.xaxis[None, :]).flatten()
-        y_pix = (np.ones(ydisk.shape) * self.xaxis[:, None]).flatten()
-        x_int = griddata((x_pix, y_pix), xdisk, (xsky, ysky))
-        y_int = griddata((x_pix, y_pix), ydisk, (xsky, ysky))
+        x_pix = (np.ones(xdisk.shape) * self.xaxis[None, ::-1]).flatten()[::5]
+        y_pix = (np.ones(ydisk.shape) * self.yaxis[:, None]).flatten()[::5]
+        x_int = griddata((x_pix, y_pix), xdisk.flatten()[::5], (xsky, ysky))
+        y_int = griddata((x_pix, y_pix), ydisk.flatten()[::5], (xsky, ysky))
 
         # Convert to output frame.
+
         if frame_out == 'cartesian':
             return x_int, y_int
-        return np.hypot(x_int, y_int), np.arctan2(y_int, x_int)
+        r_int, t_int = np.hypot(x_int, y_int), np.arctan2(y_int, x_int)
+        return r_int, np.degrees(t_int)
 
     def disk_to_sky(self, coords, frame='polar', x0=0.0, y0=0.0, inc=0.0,
                     PA=0.0, z0=0.0, psi=1.0, z1=0.0, phi=0.0, tilt=0.0,
@@ -924,6 +925,11 @@ class imagecube:
         return noise * rms / np.std(noise)
 
     # == Plotting Functions == #
+
+    @instance
+    def extent(self):
+        """Extent for imshow."""
+        return [self.xaxis[0], self.xaxis[-1], self.yaxis[0], self.yaxis[-1]]
 
     def plotbeam(self, ax, x0=0.125, y0=0.125, **kwargs):
         """
@@ -1477,30 +1483,34 @@ class imagecube:
         Tbg = 2. * sc.h * np.power(self.nu, 3) / np.power(sc.c, 2)
         return Tbg / (np.exp(sc.h * self.nu / sc.k / Tcmb) - 1.0)
 
-    def _jybeam_to_Tb(self, data=None):
+    def _jybeam_to_Tb(self, data=None, nu=None):
         """Jy/beam to K conversion."""
+        nu = self.nu if nu is None else nu
         data = self.data if data is None else data
         Tb = 1e-26 * abs(data) / self._calculate_beam_area_str()
-        Tb = 2. * sc.h * np.power(self.nu, 3) / Tb / np.power(sc.c, 2)
-        Tb = sc.h * self.nu / sc.k / np.log(Tb + 1.0)
+        Tb = 2. * sc.h * np.power(nu, 3) / Tb / np.power(sc.c, 2)
+        Tb = sc.h * nu / sc.k / np.log(Tb + 1.0)
         return np.where(data >= 0.0, Tb, -Tb)
 
-    def _jybeam_to_Tb_RJ(self, data=None):
+    def _jybeam_to_Tb_RJ(self, data=None, nu=None):
         """Jy/beam to K conversion."""
+        nu = self.nu if nu is None else nu
         data = self.data if data is None else data
-        jy2k = 1e-26 * sc.c**2 / self.nu**2 / 2. / sc.k
+        jy2k = 1e-26 * sc.c**2 / nu**2 / 2. / sc.k
         return jy2k * data / self._calculate_beam_area_str()
 
-    def _Tb_to_jybeam(self, data=None):
+    def _Tb_to_jybeam(self, data=None, nu=None):
         """K to Jy/beam conversion in Rayleigh–Jeans approximation."""
+        nu = self.nu if nu is None else nu
         data = self.data if data is None else data
-        Fv = 2. * sc.h * np.power(self.nu, 3) * np.power(sc.c, -2)
-        Fv /= np.exp(sc.h * self.nu / sc.k / abs(data)) - 1.0
+        Fv = 2. * sc.h * np.power(nu, 3) * np.power(sc.c, -2)
+        Fv /= np.exp(sc.h * nu / sc.k / abs(data)) - 1.0
         Fv *= self._calculate_beam_area_str() / 1e-26
         return np.where(data >= 0.0, Fv, -Fv)
 
-    def _Tb_to_jybeam_RJ(self, data=None):
+    def _Tb_to_jybeam_RJ(self, data=None, nu=None):
         """K to Jy/beam conversion in Rayleigh–Jeans approximation."""
+        nu = self.nu if nu is None else nu
         data = self.data if data is None else data
-        jy2k = 1e-26 * sc.c**2 / self.nu**2 / 2. / sc.k
+        jy2k = 1e-26 * sc.c**2 / nu**2 / 2. / sc.k
         return data * self._calculate_beam_area_str() / jy2k
