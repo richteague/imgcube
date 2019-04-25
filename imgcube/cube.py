@@ -926,7 +926,7 @@ class imagecube:
 
     # == Plotting Functions == #
 
-    @instance
+    @property
     def extent(self):
         """Extent for imshow."""
         return [self.xaxis[0], self.xaxis[-1], self.yaxis[0], self.yaxis[-1]]
