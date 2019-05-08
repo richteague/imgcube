@@ -130,7 +130,8 @@ class imagecube:
     # == Coordinate Deprojection == #
 
     def disk_coords(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=0.0, psi=0.0,
-                    z1=0.0, phi=0.0, tilt=0.0, frame='polar'):
+                    z1=0.0, phi=0.0, tilt=0.0, frame='polar', z_func=None,
+                    extend=1.5, oversample=0.5):
         """
         Get the disk coordinates given certain geometrical parameters and an
         emission surface. The emission surface is parameterized as a powerlaw
@@ -159,6 +160,14 @@ class imagecube:
                 clockwise on the sky.
             frame (Optional[str]): Frame of reference for the returned
                 coordinates. Either 'polar' or 'cartesian'.
+            z_func (Optional[function]): A function which provides z(r). Note
+                that no checking will occur to make sure this is a valid
+                function.
+            extend (Optional[float]): Factor to extend the axis of the
+                attached cube for the modelling.
+            oversample (Optional[float]): Rescale the number of pixels along
+                each axis. A larger number gives a better result, but at the
+                cost of computation time.
 
         Returns:
             c1 (ndarryy): Either r (cylindrical) or x depending on the frame.
@@ -174,29 +183,46 @@ class imagecube:
         if z0 != 0.0 and tilt == 0.0:
             raise ValueError("must provide tilt for 3D surfaces.")
 
-        # Define the emission surface function. This approach should leave
-        # some flexibility for more complex emission surface parameterizations.
+        # Define the emission surface function. Either use the simple double
+        # power-law profile or the user-provied function.
 
-        def func(r):
-            z = z0 * np.power(r, psi) + z1 * np.power(r, phi)
-            if z0 >= 0.0:
-                return np.clip(z, a_min=0.0, a_max=None)
-            return np.clip(z, a_min=None, a_max=0.0)
+        if z_func is None:
+            def func(r):
+                z = z0 * np.power(r, psi) + z1 * np.power(r, phi)
+                if z0 >= 0.0:
+                    return np.clip(z, a_min=0.0, a_max=None)
+                return np.clip(z, a_min=None, a_max=0.0)
+        else:
+            func = z_func
 
         # Calculate the pixel values.
 
         if frame == 'cartesian':
-            c1, c2 = self._get_flared_cart_coords(x0, y0, inc, PA, func, tilt)
-            c3 = func(np.hypot(c1, c2))
+            if z_func is None:
+                c1, c2 = self._get_flared_cart_coords(x0, y0, inc, PA,
+                                                      func, tilt)
+                c3 = func(np.hypot(c1, c2))
+            else:
+                c1, c2, c3 = self._get_flared_cart_coords_forward(x0, y0, inc,
+                                                                  PA, func,
+                                                                  extend,
+                                                                  oversample)
         else:
-            c1, c2 = self._get_flared_polar_coords(x0, y0, inc, PA, func, tilt)
-            c3 = func(c1)
+            if z_func is None:
+                c1, c2 = self._get_flared_polar_coords(x0, y0, inc, PA,
+                                                       func, tilt)
+                c3 = func(c1)
+            else:
+                c1, c2, c3 = self._get_flared_polar_coords_forward(x0, y0, inc,
+                                                                   PA, func,
+                                                                   extend,
+                                                                   oversample)
         return c1, c2, c3
 
     def get_annulus(self, r_min, r_max, PA_min=None, PA_max=None,
                     exclude_PA=False, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=0.0,
-                    psi=1.0, z1=0.0, phi=1.0, tilt=0.0, beam_spacing=True,
-                    return_theta=True, as_ensemble=False,
+                    psi=1.0, z1=0.0, phi=1.0, tilt=0.0, z_func=None,
+                    beam_spacing=True, return_theta=True, as_ensemble=False,
                     suppress_warnings=True, remove_empty=True,
                     sort_spectra=True, **kwargs):
         """
@@ -231,6 +257,9 @@ class imagecube:
             tilt (Optional[float]): Value between -1 and 1, describing the
                 rotation of the disk. For negative values, the disk is rotating
                 clockwise on the sky.
+            z_func (Optional[function]): A function which provides z(r). Note
+                that no checking will occur to make sure this is a valid
+                function.
             beam_spacing (Optional[bool/float]): If True, randomly sample the
                 annulus such that each pixel is at least a beam FWHM apart. A
                 number can also be used in place of a boolean which will
@@ -255,11 +284,13 @@ class imagecube:
         mask = self.get_mask(r_min=r_min, r_max=r_max, exclude_r=False,
                              PA_min=PA_min, PA_max=PA_max,
                              exclude_PA=exclude_PA, x0=x0, y0=y0, inc=inc,
-                             PA=PA, z0=z0, psi=psi, z1=z1, phi=phi, tilt=tilt)
+                             PA=PA, z0=z0, psi=psi, z1=z1, phi=phi, tilt=tilt,
+                             z_func=z_func)
         mask = mask.flatten()
 
         rvals, tvals, _ = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA, z0=z0,
-                                           psi=psi, z1=z1, phi=phi, tilt=tilt)
+                                           psi=psi, z1=z1, phi=phi, tilt=tilt,
+                                           z_func=z_func)
         rvals, tvals = rvals.flatten(), tvals.flatten()
         dvals, rvals, tvals = dvals[:, mask].T, rvals[mask], tvals[mask]
 
@@ -600,6 +631,89 @@ class imagecube:
             t_mid = np.arctan2(y_tmp, x_mid)
         return r_mid, t_mid
 
+    def _get_flared_cart_coords_forward(self, x0, y0, inc, PA, func, extend=2,
+                                        oversample=0.5):
+        """
+        Return cartestian coordinates of surface in [arcsec, radians]. A
+        forward modelling approach which is slower, but can better account for
+        non-parametric emission surfaces.
+
+        Args:
+            x0 (float): Source center x-axis offset in [arcsec].
+            y0 (float): Source center y-axis offset in [arcsec].
+            inc (float): Inclination of the disk in [deg]. Differences in
+                positive and negative values dictate the tilt of the disk.
+            PA (float): Position angle of the disk in [deg].
+            func (function): Function returning the height of the emission
+                surface in [arcsec] when provided a midplane radius in
+                [arcsec].
+            extend (optional[float]): Factor to extend the axis of the
+                attached cube for the modelling.
+            oversample (optional[float]): Rescale the number of pixels along
+                each axis. A larger number gives a better result, but at the
+                cost of computation time.
+
+        Returns:
+            x_obs (ndarray): Disk emission surface x coordinates.
+            y_obs (ndarray): Disk emission surface y coordinates.
+            z_obs (ndarray): Disk emission surface z coordinates.
+        """
+
+        # Disk coordinates.
+        x_disk = np.linspace(extend*self.xaxis[0], extend*self.xaxis[-1],
+                             int(self.nxpix*oversample))[::-1]
+        y_disk = np.linspace(extend*self.yaxis[0], extend*self.yaxis[-1],
+                             int(self.nypix*oversample))
+        x_disk, y_disk = np.meshgrid(x_disk, y_disk)
+        z_disk = func(np.hypot(x_disk, y_disk))
+        z_disk = np.where(z_disk < 0.0, 0.0, z_disk)
+
+        # Incline the disk.
+        inc, PA = np.radians(inc), np.radians(PA + 90.0)
+        x_inc = x_disk
+        y_inc = y_disk * np.cos(inc) - z_disk * np.sin(inc)
+        z_inc = y_disk * np.sin(inc) + z_disk * np.cos(inc)
+
+        # Remove shadowed pixels.
+        mask = np.ones(y_inc.shape).astype('bool')
+        if inc < 0.0:
+            y_inc = np.maximum.accumulate(y_inc, axis=0)
+            mask[1:] = np.diff(y_inc, axis=0) != 0.0
+        else:
+            y_inc = np.minimum.accumulate(y_inc[::-1], axis=0)[::-1]
+            mask[:-1] = np.diff(y_inc, axis=0) != 0.0
+        x_disk, y_disk, z_disk = x_disk[mask], y_disk[mask], z_disk[mask]
+        x_inc, y_inc, z_inc = x_inc[mask], y_inc[mask], z_inc[mask]
+
+        # Rotate the disk.
+        x_rot = x_inc * np.cos(PA) + y_inc * np.sin(PA)
+        y_rot = y_inc * np.cos(PA) - x_inc * np.sin(PA)
+        z_rot = z_inc
+
+        # Shift the disk.
+        x_rot += x0
+        y_rot += y0
+
+        # Interpolate back onto the sky grid.
+        from scipy.interpolate import griddata
+        x_obs = griddata((x_rot.flatten(), y_rot.flatten()), x_disk.flatten(),
+                         (self.xaxis[None, :], self.yaxis[:, None]))
+        y_obs = griddata((x_rot.flatten(), y_rot.flatten()), y_disk.flatten(),
+                         (self.xaxis[None, :], self.yaxis[:, None]))
+        z_obs = griddata((x_rot.flatten(), y_rot.flatten()), z_disk.flatten(),
+                         (self.xaxis[None, :], self.yaxis[:, None]))
+        return x_obs, y_obs, z_obs
+
+    def _get_flared_polar_coords_forward(self, x0, y0, inc, PA, func,
+                                         extend=2.0, oversample=0.5):
+        """As _get_flared_cart_coords_forward, returning polar coordinates."""
+        coords = self._get_flared_cart_coords_forward(x0=x0, y0=y0, inc=inc,
+                                                      PA=PA, func=func,
+                                                      extend=extend,
+                                                      oversample=oversample)
+        x_obs, y_obs, z_obs = coords
+        return np.hypot(x_obs, y_obs), np.arctan2(y_obs, -x_obs), z_obs
+
     def _get_flared_cart_coords(self, x0, y0, inc, PA, func, tilt):
         """Return cartesian coordinates of surface in [arcsec, arcsec]."""
         r_mid, t_mid = self._get_flared_polar_coords(x0, y0, inc,
@@ -630,7 +744,7 @@ class imagecube:
 
     def radial_profile(self, rpnts=None, rbins=None, x0=0.0, y0=0.0, inc=0.0,
                        PA=0.0, z0=0.0, psi=1.0, z1=0.0, phi=1.0, tilt=0.0,
-                       PA_min=None, PA_max=None, exclude_PA=False,
+                       z_func=None, PA_min=None, PA_max=None, exclude_PA=False,
                        beam_spacing=False, collapse='max', clip_values=None,
                        statistic='mean', uncertainty='stddev', **kwargs):
         """
@@ -700,13 +814,15 @@ class imagecube:
 
         dvals = self._collapse_cube(method=collapse, clip_values=clip_values)
         rvals, tvals = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA, z0=z0,
-                                        psi=psi, z1=z1, phi=phi, tilt=tilt)[:2]
+                                        psi=psi, z1=z1, phi=phi, tilt=tilt,
+                                        z_func=z_func)[:2]
         rvals, tvals, dvals = rvals.flatten(), tvals.flatten(), dvals.flatten()
 
         if PA_min is not None or PA_max is not None:
             mask = self.get_mask(x0=x0, y0=y0, inc=inc, PA=PA, z0=z0, psi=psi,
-                                 z1=z1, phi=phi, tilt=tilt, PA_min=PA_min,
-                                 PA_max=PA_max, exclude_PA=exclude_PA)
+                                 z1=z1, phi=phi, tilt=tilt, z_func=z_func,
+                                 PA_min=PA_min, PA_max=PA_max,
+                                 exclude_PA=exclude_PA)
             mask = mask.flatten()
             rvals, tvals, dvals = rvals[mask], tvals[mask], dvals[mask]
 
@@ -914,12 +1030,12 @@ class imagecube:
 
         # Convolve it spatially.
         if bmaj > 0.0:
-            kernel = cube._beamkernel(bmaj=bmaj, bmin=bmin, bpa=bpa)
+            kernel = self._beamkernel(bmaj=bmaj, bmin=bmin, bpa=bpa)
             if self.data.ndim == 3:
-                noise = np.array([cube._convolve_image(c, kernel)
+                noise = np.array([self._convolve_image(c, kernel)
                                   for c in noise])
             else:
-                noise = cube._convolve_image(noise, kernel)
+                noise = self._convolve_image(noise, kernel)
 
         # Rescale the noise.
         return noise * rms / np.std(noise)
@@ -1078,6 +1194,98 @@ class imagecube:
         What.
         """
         return
+
+    # == Emission Height Functions == #
+
+    def emission_height(self, inc, PA, x0=0.0, y0=0.0, chans=None,
+                        threshold=0.95, smooth=[0.5, 0.5], **kwargs):
+        """
+        Infer the height of the emission surface following the method in Pinte
+        et al. (2018a).
+
+        Args:
+            inc (float): Inclination of the source in [degrees].
+            PA (float): Position angle of the source in [degrees].
+            x0 (Optional[float]): Source center offset in x direction in
+                [arcsec].
+            y0 (Optional[float]): Source center offset in y direction in
+                [arcsec].
+            chans (Optional[list]): The lower and upper channel numbers to
+                include in the fitting.
+            threshold (Optional[float]): Fraction of the peak intensity at that
+                radius to clip in calculating the data.
+            smooth (Optional[list]): Kernel to smooth the profile with prior to
+                measuring the peak pixel positions.
+
+        Returns:
+            r (ndarray): Deprojected midplane radius in [arcsec].
+            z (ndarray): Deprojected emission height in [arcsec].
+            Fnu (ndarray): Intensity of at that location.
+        """
+
+        # Extract the channels to use.
+        if chans is None:
+            chans = [0, self.velax.size]
+        chans = np.atleast_1d(chans)
+        chans[0] = max(chans[0], 0)
+        chans[1] = min(chans[1], self.velax.size)
+        data = self.data[chans[0]:chans[1]+1].copy()
+
+        # Shift the images to center the image.
+        if x0 != 0.0 or y0 != 0.0:
+            from scipy.ndimage import shift
+            dy = -y0 / self.dpix
+            dx = x0 / self.dpix
+            data = np.array([shift(c, [dy, dx]) for c in data])
+
+        # Rotate the image so major axis is aligned with x-axis.
+        if PA is not None:
+            from scipy.ndimage import rotate
+            data = np.array([rotate(c, PA - 90.0, reshape=False) for c in data])
+
+        # Make a radial profile of the peak values.
+        if threshold > 0.0:
+            Tb = np.max(data, axis=0).flatten()
+            rvals = self._get_midplane_polar_coords(0.0, 0.0, inc, 0.0)[0]
+            rbins = np.arange(0, self.xaxis.max() + self.dpix, self.dpix)
+            ridxs = np.digitize(rvals.flatten(), rbins)
+            avgTb = [np.mean(Tb[ridxs == r]) for r in range(1, rbins.size)]
+            kernel = np.ones(np.ceil(self.bmaj / self.dpix).astype('int'))
+            avgTb = np.convolve(avgTb, kernel / np.sum(kernel), mode='same')
+
+        # Clip everything below this value.
+        from scipy.interpolate import interp1d
+        avgTb = interp1d(rbins[:-1], threshold * avgTb,
+                         fill_value=np.nan, bounds_error=False)
+        data = np.where(data >= avgTb(rvals), data, 0.0)
+
+        # Find all the peaks. Save the (r, z, Tb) value. Here we convolve the
+        # profile with a top-hat function to reduce some of the noise. We find
+        # the two peaks and follow the method from Pinte et al. (2018a) to
+        # calculate the height of the emission.
+        #from detect_peaks import detect_peaks
+        smooth = smooth / np.sum(smooth) if smooth is not None else [1.0]
+        peaks = []
+        for c_idx in range(data.shape[0]):
+            for x_idx in range(data.shape[2]):
+                x_c = self.xaxis[x_idx]
+                mpd = kwargs.pop('mpd', 0.05 * abs(x_c))
+                try:
+                    profile = np.convolve(data[c_idx, :, x_idx],
+                                          smooth, mode='same')
+                    y_idx = detect_peaks(profile, mpd=mpd, **kwargs)
+                    y_idx = y_idx[data[c_idx, y_idx, x_idx].argsort()]
+                    y_f, y_n = self.yaxis[y_idx[-2:]]
+                    y_c = 0.5 * (y_f + y_n)
+                    r = np.hypot(x_c, (y_f - y_c) / np.cos(np.radians(inc)))
+                    z = y_c / np.sin(np.radians(inc))
+                    if z > 0.5 * r or z < 0:
+                        raise ValueError()
+                    Tb = data[c_idx, y_idx[-1], x_idx]
+                except:
+                    r, z, Tb = np.nan, np.nan, np.nan
+                peaks += [[r, z, Tb]]
+        return np.squeeze(peaks).T
 
     # == Spectra Functions == #
 
@@ -1514,3 +1722,146 @@ class imagecube:
         data = self.data if data is None else data
         jy2k = 1e-26 * sc.c**2 / nu**2 / 2. / sc.k
         return data * self._calculate_beam_area_str() / jy2k
+
+
+def detect_peaks(x, mph=None, mpd=1, threshold=0, edge='rising',
+                 kpsh=False, valley=False, show=False, ax=None):
+
+    """Detect peaks in data based on their amplitude and other features.
+
+    Parameters
+    ----------
+    x : 1D array_like
+        data.
+    mph : {None, number}, optional (default = None)
+        detect peaks that are greater than minimum peak height.
+    mpd : positive integer, optional (default = 1)
+        detect peaks that are at least separated by minimum peak distance (in
+        number of data).
+    threshold : positive number, optional (default = 0)
+        detect peaks (valleys) that are greater (smaller) than `threshold`
+        in relation to their immediate neighbors.
+    edge : {None, 'rising', 'falling', 'both'}, optional (default = 'rising')
+        for a flat peak, keep only the rising edge ('rising'), only the
+        falling edge ('falling'), both edges ('both'), or don't detect a
+        flat peak (None).
+    kpsh : bool, optional (default = False)
+        keep peaks with same height even if they are closer than `mpd`.
+    valley : bool, optional (default = False)
+        if True (1), detect valleys (local minima) instead of peaks.
+    show : bool, optional (default = False)
+        if True (1), plot data in matplotlib figure.
+    ax : a matplotlib.axes.Axes instance, optional (default = None).
+
+    Returns
+    -------
+    ind : 1D array_like
+        indeces of the peaks in `x`.
+
+    Notes
+    -----
+    The detection of valleys instead of peaks is performed internally by simply
+    negating the data: `ind_valleys = detect_peaks(-x)`
+
+    The function can handle NaN's
+
+    See this IPython Notebook [1]_.
+
+    References
+    ----------
+    .. [1] http://nbviewer.ipython.org/github/demotu/BMC/
+                                        blob/master/notebooks/DetectPeaks.ipynb
+
+    Examples
+    --------
+    >>> from detect_peaks import detect_peaks
+    >>> x = np.random.randn(100)
+    >>> x[60:81] = np.nan
+    >>> # detect all peaks and plot data
+    >>> ind = detect_peaks(x, show=True)
+    >>> print(ind)
+
+    >>> x = np.sin(2*np.pi*5*np.linspace(0, 1, 200)) + np.random.randn(200)/5
+    >>> # set minimum peak height = 0 and minimum peak distance = 20
+    >>> detect_peaks(x, mph=0, mpd=20, show=True)
+
+    >>> x = [0, 1, 0, 2, 0, 3, 0, 2, 0, 1, 0]
+    >>> # set minimum peak distance = 2
+    >>> detect_peaks(x, mpd=2, show=True)
+
+    >>> x = np.sin(2*np.pi*5*np.linspace(0, 1, 200)) + np.random.randn(200)/5
+    >>> # detection of valleys instead of peaks
+    >>> detect_peaks(x, mph=0, mpd=20, valley=True, show=True)
+
+    >>> x = [0, 1, 1, 0, 1, 1, 0]
+    >>> # detect both edges
+    >>> detect_peaks(x, edge='both', show=True)
+
+    >>> x = [-2, 1, -2, 2, 1, 1, 3, 0]
+    >>> # set threshold = 2
+    >>> detect_peaks(x, threshold = 2, show=True)
+    """
+
+    x = np.atleast_1d(x).astype('float64')
+    if x.size < 3:
+        return np.array([], dtype=int)
+    if valley:
+        x = -x
+    # find indices of all peaks
+    dx = x[1:] - x[:-1]
+    # handle NaN's
+    indnan = np.where(np.isnan(x))[0]
+    if indnan.size:
+        x[indnan] = np.inf
+        dx[np.where(np.isnan(dx))[0]] = np.inf
+    ine, ire, ife = np.array([[], [], []], dtype=int)
+    if not edge:
+        ine = np.where((np.hstack((dx, 0)) < 0) & (np.hstack((0, dx)) > 0))[0]
+    else:
+        if edge.lower() in ['rising', 'both']:
+            m1 = np.hstack((dx, 0)) <= 0
+            m2 = np.hstack((0, dx)) > 0
+            ire = np.where(m1 & m2)[0]
+        if edge.lower() in ['falling', 'both']:
+            m1 = np.hstack((dx, 0)) < 0
+            m2 = np.hstack((0, dx)) >= 0
+            ife = np.where(m1 & m2)[0]
+    ind = np.unique(np.hstack((ine, ire, ife)))
+    # handle NaN's
+    if ind.size and indnan.size:
+        # NaN's and values close to NaN's cannot be peaks
+        thing = np.unique(np.hstack((indnan, indnan-1, indnan+1)))
+        ind = ind[np.in1d(ind, thing, invert=True)]
+    # first and last values of x cannot be peaks
+    if ind.size and ind[0] == 0:
+        ind = ind[1:]
+    if ind.size and ind[-1] == x.size-1:
+        ind = ind[:-1]
+    # remove peaks < minimum peak height
+    if ind.size and mph is not None:
+        ind = ind[x[ind] >= mph]
+    # remove peaks - neighbors < threshold
+    if ind.size and threshold > 0:
+        dx = np.min(np.vstack([x[ind]-x[ind-1], x[ind]-x[ind+1]]), axis=0)
+        ind = np.delete(ind, np.where(dx < threshold)[0])
+    # detect small peaks closer than minimum peak distance
+    if ind.size and mpd > 1:
+        ind = ind[np.argsort(x[ind])][::-1]  # sort ind by peak height
+        idel = np.zeros(ind.size, dtype=bool)
+        for i in range(ind.size):
+            if not idel[i]:
+                # keep peaks with the same height if kpsh is True
+                idel = idel | (ind >= ind[i] - mpd) & (ind <= ind[i] + mpd) \
+                    & (x[ind[i]] > x[ind] if kpsh else True)
+                idel[i] = 0  # Keep current peak
+        # remove the small peaks and sort back the indices by their occurrence
+        ind = np.sort(ind[~idel])
+
+    if show:
+        if indnan.size:
+            x[indnan] = np.nan
+        if valley:
+            x = -x
+        _plot(x, mph, mpd, threshold, edge, valley, ax, ind)
+
+    return ind
