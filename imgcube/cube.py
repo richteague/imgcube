@@ -1285,7 +1285,8 @@ class imagecube:
                 except:
                     r, z, Tb = np.nan, np.nan, np.nan
                 peaks += [[r, z, Tb]]
-        return np.squeeze(peaks).T
+        peaks = np.squeeze(peaks)
+        return peaks[~np.any(np.isnan(peaks), axis=1)].T
 
     # == Spectra Functions == #
 
