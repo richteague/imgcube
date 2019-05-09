@@ -1540,7 +1540,8 @@ class imagecube:
 
     def get_mask(self, r_min=None, r_max=None, exclude_r=False, PA_min=None,
                  PA_max=None, exclude_PA=False, x0=0.0, y0=0.0, inc=0.0,
-                 PA=0.0, z0=0.0, psi=1.0, z1=0.0, phi=1.0, tilt=0.0):
+                 PA=0.0, z0=0.0, psi=1.0, z1=0.0, phi=1.0, tilt=0.0,
+                 z_func=None):
         """
         Returns a 2D mask for pixels in the given region.
 
@@ -1573,13 +1574,17 @@ class imagecube:
             tilt (Optional[float]): Value between -1 and 1, describing the
                 rotation of the disk. For negative values, the disk is rotating
                 clockwise on the sky.
+            z_func (Optional[callable]): A function which returns the emission
+                height in [arcsec] for a midplane radius in [arcsec]. If
+                provided, will be used in place of the parametric emission
+                surface.
 
         Returns:
             mask (ndarray): A 2D mask.
         """
         rvals, tvals, _ = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA, z0=z0,
                                            psi=psi, z1=z1, phi=phi, tilt=tilt,
-                                           frame='polar')
+                                           z_func=z_func, frame='polar')
         r_min = rvals.min() if r_min is None else r_min
         r_max = rvals.max() if r_max is None else r_max
         r_mask = np.logical_and(rvals >= r_min, rvals <= r_max)
