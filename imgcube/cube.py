@@ -632,7 +632,7 @@ class imagecube:
         return r_mid, t_mid
 
     def _get_flared_cart_coords_forward(self, x0, y0, inc, PA, func, extend=2,
-                                        oversample=0.5):
+                                        oversample=0.5, gridded=True):
         """
         Return cartestian coordinates of surface in [arcsec, radians]. A
         forward modelling approach which is slower, but can better account for
@@ -682,8 +682,8 @@ class imagecube:
         else:
             y_inc = np.minimum.accumulate(y_inc[::-1], axis=0)[::-1]
             mask[:-1] = np.diff(y_inc, axis=0) != 0.0
-        x_disk, y_disk, z_disk = x_disk[mask], y_disk[mask], z_disk[mask]
-        x_inc, y_inc, z_inc = x_inc[mask], y_inc[mask], z_inc[mask]
+        #x_disk, y_disk, z_disk = x_disk[mask], y_disk[mask], z_disk[mask]
+        #x_inc, y_inc, z_inc = x_inc[mask], y_inc[mask], z_inc[mask]
 
         # Rotate the disk.
         x_rot = x_inc * np.cos(PA) + y_inc * np.sin(PA)
@@ -693,6 +693,10 @@ class imagecube:
         # Shift the disk.
         x_rot += x0
         y_rot += y0
+
+        # Return the pixel values for user-deprojection.
+        if not gridded:
+            return x_rot, y_rot, z_rot
 
         # Interpolate back onto the sky grid.
         from scipy.interpolate import griddata
@@ -1346,7 +1350,8 @@ class imagecube:
         annulus = self.get_annulus(r_min=r_min, r_max=r_max, PA_min=PA_min,
                                    PA_max=PA_max, exclude_PA=exclude_PA, x0=x0,
                                    y0=y0, inc=inc, PA=PA, z0=z0, psi=psi,
-                                   z1=z1, phi=phi, tilt=tilt, as_ensemble=True,
+                                   z1=z1, phi=phi, tilt=tilt, z_func=None,
+                                   as_ensemble=True,
                                    beam_spacing=beam_spacing)
         if vrot is None:
             vrot = self.keplerian_curve(rpnts=np.average([r_min, r_max]),
@@ -1585,12 +1590,12 @@ class imagecube:
         rvals, tvals, _ = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA, z0=z0,
                                            psi=psi, z1=z1, phi=phi, tilt=tilt,
                                            z_func=z_func, frame='polar')
-        r_min = rvals.min() if r_min is None else r_min
-        r_max = rvals.max() if r_max is None else r_max
+        r_min = np.nanmin(rvals) if r_min is None else r_min
+        r_max = np.nanmax(rvals) if r_max is None else r_max
         r_mask = np.logical_and(rvals >= r_min, rvals <= r_max)
         r_mask = ~r_mask if exclude_r else r_mask
-        PA_min = tvals.min() if PA_min is None else np.radians(PA_min)
-        PA_max = tvals.max() if PA_max is None else np.radians(PA_max)
+        PA_min = np.nanmin(tvals) if PA_min is None else np.radians(PA_min)
+        PA_max = np.nanmax(tvals) if PA_max is None else np.radians(PA_max)
         PA_mask = np.logical_and(tvals >= PA_min, tvals <= PA_max)
         PA_mask = ~PA_mask if exclude_PA else PA_mask
         return r_mask * PA_mask
