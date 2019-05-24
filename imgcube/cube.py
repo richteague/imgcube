@@ -11,7 +11,7 @@ class imagecube:
     fwhm = 2. * np.sqrt(2 * np.log(2))
 
     def __init__(self, path, kelvin=False, clip=None, resample=1, verbose=None,
-                 suppress_warnings=True, absolute=False):
+                 suppress_warnings=True, absolute=False, dx0=0.0, dy0=0.0):
         """
         Load up a FITS image cube.
 
@@ -29,10 +29,10 @@ class imagecube:
             suppress_warnings (Optional[bool]): Suppress warnings from other
                 Python pacakges (for example numpy). If this is selected then
                 verbose will be set to False unless specified.
-            absolute (Optional[bool]): If True, use absolute coordinates using
-                Astropy's WCS. This is not tested and is not compatible with
-                most of the functions.
-
+            dx0 (Optional[float]): Recenter the image to this right ascencion
+                offset [arcsec].
+            dy0 (Optional[float]): Recenter the image to this declination
+                offset [arcsec].
         Returns:
             None)
         """
@@ -53,7 +53,7 @@ class imagecube:
         self.header = fits.getheader(path)
 
         # Generate the cube axes.
-        self.absolute = absolute
+        self.absolute = False
         if self.absolute and self.verbose:
             print("Returning absolute coordinate values are not tested.")
             print("WARNING: self.dpix will be strange.")
@@ -63,6 +63,10 @@ class imagecube:
         self.nypix = self.yaxis.size
         self.dpix = np.mean([abs(np.diff(self.xaxis)),
                              abs(np.diff(self.yaxis))])
+
+        # Recenter the image if requested.
+        if (dx0 != 0.0) or (dy0 != 0.0):
+            self.shift_center(dx0=dx0, dy0=dy0, save=True)
 
         # Spectral axis. Make sure velocity is increasing.
         self.nu = self._readrestfreq()
@@ -631,6 +635,28 @@ class imagecube:
             t_mid = np.arctan2(y_tmp, x_mid)
         return r_mid, t_mid
 
+    def shift_center(self, dx0=0.0, dy0=0.0, data=None, save=True):
+        """Shift the source center by (dx0 [arcsec], dy0 [arcsec])."""
+        from scipy.ndimage import shift
+        y0, x0 = -dy0 / self.dpix, dx0 / self.dpix
+        data = data if data is not None else self.data
+        to_shift = np.where(np.isfinite(data), data, 0.0)
+        shifted = np.array([shift(c, [y0, x0]) for c in to_shift])
+        if not save:
+            return shifted
+        self.data = shifted
+
+    def rotate_image(self, PA, data=None, save=True):
+        """Rotat the image PA [degrees] anticlockwise about the center."""
+        from scipy.ndimage import rotate
+        PA -= 90.0
+        data = data if data is not None else self.data
+        to_rotate = np.where(np.isfinite(data), data, 0.0)
+        rotated = np.array([rotate(c, PA, reshape=False) for c in to_rotate])
+        if not save:
+            return rotated
+        self.data = data
+
     def _get_flared_cart_coords_forward(self, x0, y0, inc, PA, func, extend=2,
                                         oversample=0.5, gridded=True):
         """
@@ -665,8 +691,11 @@ class imagecube:
         y_disk = np.linspace(extend*self.yaxis[0], extend*self.yaxis[-1],
                              int(self.nypix*oversample))
         x_disk, y_disk = np.meshgrid(x_disk, y_disk)
-        z_disk = func(np.hypot(x_disk, y_disk))
-        z_disk = np.where(z_disk < 0.0, 0.0, z_disk)
+        try:
+            z_disk = func(np.hypot(x_disk, y_disk), np.arctan2(y_disk, x_disk))
+        except TypeError:
+            z_disk = func(np.hypot(x_disk, y_disk))
+            z_disk = np.where(z_disk < 0.0, 0.0, z_disk)
 
         # Incline the disk.
         inc, PA = np.radians(inc), np.radians(PA + 90.0)
@@ -682,8 +711,6 @@ class imagecube:
         else:
             y_inc = np.minimum.accumulate(y_inc[::-1], axis=0)[::-1]
             mask[:-1] = np.diff(y_inc, axis=0) != 0.0
-        #x_disk, y_disk, z_disk = x_disk[mask], y_disk[mask], z_disk[mask]
-        #x_inc, y_inc, z_inc = x_inc[mask], y_inc[mask], z_inc[mask]
 
         # Rotate the disk.
         x_rot = x_inc * np.cos(PA) + y_inc * np.sin(PA)
@@ -1236,16 +1263,12 @@ class imagecube:
         data = self.data[chans[0]:chans[1]+1].copy()
 
         # Shift the images to center the image.
-        if x0 != 0.0 or y0 != 0.0:
-            from scipy.ndimage import shift
-            dy = -y0 / self.dpix
-            dx = x0 / self.dpix
-            data = np.array([shift(c, [dy, dx]) for c in data])
+        if (x0 != 0.0) or (y0 != 0.0):
+            data = self.shift_center(dx0=x0, dy0=y0, data=data, save=False)
 
         # Rotate the image so major axis is aligned with x-axis.
         if PA is not None:
-            from scipy.ndimage import rotate
-            data = np.array([rotate(c, PA - 90.0, reshape=False) for c in data])
+            data = self.rotate_image(PA, data=data, save=False)
 
         # Make a radial profile of the peak values.
         if threshold > 0.0:
@@ -1339,6 +1362,7 @@ class imagecube:
         Keplerian rotation or with the provided vrot and vrad values.
 
         Args:
+            Coming...
 
         Returns:
             x (ndarray[float]): Spectral axis of the deprojected spectrum.
@@ -1351,15 +1375,13 @@ class imagecube:
                                    PA_max=PA_max, exclude_PA=exclude_PA, x0=x0,
                                    y0=y0, inc=inc, PA=PA, z0=z0, psi=psi,
                                    z1=z1, phi=phi, tilt=tilt, z_func=None,
-                                   as_ensemble=True,
-                                   beam_spacing=beam_spacing)
+                                   as_ensemble=True, beam_spacing=beam_spacing)
         if vrot is None:
             vrot = self.keplerian_curve(rpnts=np.average([r_min, r_max]),
                                         mstar=mstar, dist=dist, inc=inc, z0=z0,
                                         psi=psi, z1=z1, phi=phi)
-        vlos = annulus.calc_vlos(vrot=vrot, vrad=vrad)
-        return annulus.deprojected_spectrum(vlos, resample=resample,
-                                            scatter=True)
+        return annulus.deprojected_spectrum(vrot=vrot, vrad=vrad,
+                                            resample=resample, scatter=True)
 
     # == Rotation Functions == #
 
@@ -1606,16 +1628,22 @@ class imagecube:
         """Clip the cube to +\- clip arcseconds from the origin."""
         if self.absolute:
             raise ValueError("Cannot clip with absolute coordinates.")
-        xa = abs(self.xaxis - clip).argmin()
-        xb = abs(self.xaxis + clip).argmin()
-        ya = abs(self.yaxis - clip).argmin()
-        yb = abs(self.yaxis + clip).argmin()
+        xa = abs(self.xaxis - radius).argmin()
+        xa = xa - 1 if self.xaxis[xa] < radius else xa
+        xb = abs(self.xaxis + radius).argmin()
+        xb = xb + 1 if self.xaxis[xb + 1] < radius else xb
+        xb += 1
+        ya = abs(self.yaxis + radius).argmin()
+        ya = ya - 1 if self.yaxis[ya] < radius else ya
+        yb = abs(self.yaxis - radius).argmin()
+        yb = yb + 1 if self.yaxis[yb + 1] < radius else yb
+        yb += 2
         if self.data.ndim == 3:
-            self.data = self.data[:, yb:ya, xa:xb]
+            self.data = self.data[:, ya:yb, xa:xb]
         else:
-            self.data = self.data[yb:ya, xa:xb]
+            self.data = self.data[ya:yb, xa:xb]
         self.xaxis = self.xaxis[xa:xb]
-        self.yaxis = self.yaxis[yb:ya]
+        self.yaxis = self.yaxis[ya:yb]
         self.nxpix = self.xaxis.size
         self.nypix = self.yaxis.size
 
