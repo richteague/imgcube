@@ -9,6 +9,7 @@ class imagecube:
     # Disk specific units.
     msun = 1.988e30
     fwhm = 2. * np.sqrt(2 * np.log(2))
+    disk_coords_niter = 20
 
     def __init__(self, path, kelvin=False, clip=None, resample=1, verbose=None,
                  suppress_warnings=True, absolute=False, dx0=0.0, dy0=0.0):
@@ -134,8 +135,8 @@ class imagecube:
     # == Coordinate Deprojection == #
 
     def disk_coords(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=0.0, psi=0.0,
-                    z1=0.0, phi=0.0, tilt=0.0, frame='polar', z_func=None,
-                    extend=1.5, oversample=0.5):
+                    z1=0.0, phi=0.0, w_i=0.0, w_r=1.0, w_t=0.0, z_func=None,
+                    w_func=None, extend=2., oversample=1, frame='cylindrical'):
         """
         Get the disk coordinates given certain geometrical parameters and an
         emission surface. The emission surface is parameterized as a powerlaw
@@ -182,51 +183,34 @@ class imagecube:
         # Check the input variables.
 
         frame = frame.lower()
-        if frame not in ['cartesian', 'polar']:
-            raise ValueError("frame must be 'cartesian' or 'polar'.")
-        if z0 != 0.0 and tilt == 0.0:
-            raise ValueError("must provide tilt for 3D surfaces.")
+        if frame not in ['cylindrical', 'polar']:
+            raise ValueError("frame must be 'cylindrical' or 'polar'.")
 
         # Define the emission surface function. Either use the simple double
         # power-law profile or the user-provied function.
 
         if z_func is None:
-            def func(r):
+            def z_func(r):
                 z = z0 * np.power(r, psi) + z1 * np.power(r, phi)
                 if z0 >= 0.0:
                     return np.clip(z, a_min=0.0, a_max=None)
                 return np.clip(z, a_min=None, a_max=0.0)
-        else:
-            func = z_func
+        if w_func is None:
+            def w_func(r, t):
+                warp = np.radians(w_i) * np.exp(-0.5 * (r / w_r)**2)
+                return r * np.tan(warp * np.sin(t - np.radians(w_t)))
 
         # Calculate the pixel values.
-
-        if frame == 'cartesian':
-            if z_func is None:
-                c1, c2 = self._get_flared_cart_coords(x0, y0, inc, PA,
-                                                      func, tilt)
-                c3 = func(np.hypot(c1, c2))
-            else:
-                c1, c2, c3 = self._get_flared_cart_coords_forward(x0, y0, inc,
-                                                                  PA, func,
-                                                                  extend,
-                                                                  oversample)
-        else:
-            if z_func is None:
-                c1, c2 = self._get_flared_polar_coords(x0, y0, inc, PA,
-                                                       func, tilt)
-                c3 = func(c1)
-            else:
-                c1, c2, c3 = self._get_flared_polar_coords_forward(x0, y0, inc,
-                                                                   PA, func,
-                                                                   extend,
-                                                                   oversample)
-        return c1, c2, c3
+        r, t, z = self._get_flared_coords(x0, y0, inc, PA, z_func, w_func)
+        if frame == 'cylindrical':
+            return r, t, z
+        return r * np.cos(t), r * np.sin(t), z
 
     def get_annulus(self, r_min, r_max, PA_min=None, PA_max=None,
                     exclude_PA=False, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=0.0,
-                    psi=1.0, z1=0.0, phi=1.0, tilt=0.0, z_func=None,
-                    beam_spacing=True, return_theta=True, as_ensemble=False,
+                    psi=1.0, z1=0.0, phi=1.0, w_i=0.0, w_r=1.0, w_t=0.0,
+                    z_func=None, w_func=None, beam_spacing=True,
+                    return_theta=True, as_ensemble=False,
                     suppress_warnings=True, remove_empty=True,
                     sort_spectra=True, **kwargs):
         """
@@ -288,13 +272,14 @@ class imagecube:
         mask = self.get_mask(r_min=r_min, r_max=r_max, exclude_r=False,
                              PA_min=PA_min, PA_max=PA_max,
                              exclude_PA=exclude_PA, x0=x0, y0=y0, inc=inc,
-                             PA=PA, z0=z0, psi=psi, z1=z1, phi=phi, tilt=tilt,
-                             z_func=z_func)
+                             PA=PA, z0=z0, psi=psi, z1=z1, phi=phi, w_i=w_i,
+                             w_r=w_r, w_t=w_t, z_func=z_func, w_func=w_func)
         mask = mask.flatten()
 
         rvals, tvals, _ = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA, z0=z0,
-                                           psi=psi, z1=z1, phi=phi, tilt=tilt,
-                                           z_func=z_func)
+                                           psi=psi, z1=z1, phi=phi, w_i=w_i,
+                                           w_r=w_r, w_t=w_t, z_func=z_func,
+                                           w_func=w_func)
         rvals, tvals = rvals.flatten(), tvals.flatten()
         dvals, rvals, tvals = dvals[:, mask].T, rvals[mask], tvals[mask]
 
@@ -595,8 +580,8 @@ class imagecube:
     @staticmethod
     def _rotate_coords(x, y, PA):
         """Rotate (x, y) by PA [deg]."""
-        x_rot = x * np.cos(np.radians(PA)) - y * np.sin(np.radians(PA))
-        y_rot = y * np.cos(np.radians(PA)) + x * np.sin(np.radians(PA))
+        x_rot = y * np.cos(np.radians(PA)) + x * np.sin(np.radians(PA))
+        y_rot = x * np.cos(np.radians(PA)) - y * np.sin(np.radians(PA))
         return x_rot, y_rot
 
     @staticmethod
@@ -616,7 +601,7 @@ class imagecube:
     def _get_midplane_cart_coords(self, x0, y0, inc, PA):
         """Return cartesian coordaintes of midplane in [arcsec, arcsec]."""
         x_sky, y_sky = self._get_cart_sky_coords(x0, y0)
-        x_rot, y_rot = imagecube._rotate_coords(y_sky, x_sky, -PA)
+        x_rot, y_rot = imagecube._rotate_coords(x_sky, y_sky, PA)
         return imagecube._deproject_coords(x_rot, y_rot, inc)
 
     def _get_midplane_polar_coords(self, x0, y0, inc, PA):
@@ -624,16 +609,16 @@ class imagecube:
         x_mid, y_mid = self._get_midplane_cart_coords(x0, y0, inc, PA)
         return np.hypot(y_mid, x_mid), np.arctan2(y_mid, x_mid)
 
-    def _get_flared_polar_coords(self, x0, y0, inc, PA, func, tilt):
-        """Return polar coordinates of surface in [arcsec, radians]."""
+    def _get_flared_coords(self, x0, y0, inc, PA, z_func, w_func):
+        """Return cylindrical coordinates of surface in [arcsec, radians]."""
         x_mid, y_mid = self._get_midplane_cart_coords(x0, y0, inc, PA)
-        r_mid, t_mid = self._get_midplane_polar_coords(x0, y0, inc, PA)
-        for _ in range(5):
-            y_tmp = func(r_mid) * np.sign(tilt) * np.tan(np.radians(inc))
-            y_tmp = y_mid - y_tmp
-            r_mid = np.hypot(y_tmp, x_mid)
-            t_mid = np.arctan2(y_tmp, x_mid)
-        return r_mid, t_mid
+        r_tmp, t_tmp = np.hypot(x_mid, y_mid), np.arctan2(y_mid, x_mid)
+        for _ in range(self.disk_coords_niter):
+            z_tmp = z_func(r_tmp) + w_func(r_tmp, t_tmp)
+            y_tmp = y_mid + z_tmp * np.tan(np.radians(inc))
+            r_tmp = np.hypot(y_tmp, x_mid)
+            t_tmp = np.arctan2(y_tmp, x_mid)
+        return r_tmp, t_tmp, z_func(r_tmp)
 
     def shift_center(self, dx0=0.0, dy0=0.0, data=None, save=True):
         """Shift the source center by (dx0 [arcsec], dy0 [arcsec])."""
@@ -744,12 +729,6 @@ class imagecube:
                                                       oversample=oversample)
         x_obs, y_obs, z_obs = coords
         return np.hypot(x_obs, y_obs), np.arctan2(y_obs, -x_obs), z_obs
-
-    def _get_flared_cart_coords(self, x0, y0, inc, PA, func, tilt):
-        """Return cartesian coordinates of surface in [arcsec, arcsec]."""
-        r_mid, t_mid = self._get_flared_polar_coords(x0, y0, inc,
-                                                     PA, func, tilt)
-        return r_mid * np.cos(t_mid), r_mid * np.sin(t_mid)
 
     def clip_velocity(self, vmin=None, vmax=None):
         """Clip the cube between (including) the defined velocity ranges."""
@@ -977,7 +956,7 @@ class imagecube:
 
     def _beamkernel(self, bmaj=None, bmin=None, bpa=None, nbeams=1.0):
         """Returns the 2D Gaussian kernel for convolution."""
-        from astropy.convolution import Kernel
+        from astropy.convolution import Gaussian2DKernel
         if bmaj is None and bmin is None and bpa is None:
             bmaj = self.bmaj
             bmin = self.bmin
@@ -988,9 +967,10 @@ class imagecube:
         if nbeams > 1.0:
             bmin *= nbeams
             bmaj *= nbeams
-        return Kernel(self._gaussian2D(bmin, bmaj, bpa + 90.).T)
+        return Gaussian2DKernel(bmin, bmaj, theta=np.radians(bpa))
+        # return Kernel(self._gaussian2D(bmin, bmaj, bpa + 90.).T)
 
-    def _gaussian2D(self, dx, dy, PA=0.0):
+    def __gaussian2D(self, dx, dy, PA=0.0):
         """2D Gaussian kernel in pixel coordinates."""
         xm = np.arange(-4*np.nanmax([dy, dx]), 4*np.nanmax([dy, dx])+1)
         x, y = np.meshgrid(xm, xm)
@@ -1005,7 +985,7 @@ class imagecube:
             from astropy.convolution import convolve_fft
             return convolve_fft(image, kernel)
         from astropy.convolution import convolve
-        return convolve(image, kernel)
+        return convolve(image, kernel, boundary='extend')
 
     def convolve_cube(self, bmaj=None, bmin=None, bpa=None, nbeams=1.0,
                       fast=True, data=None):
@@ -1078,6 +1058,16 @@ class imagecube:
         """Extent for imshow."""
         return [self.xaxis[0], self.xaxis[-1], self.yaxis[0], self.yaxis[-1]]
 
+    @property
+    def BuRd(self):
+        import matplotlib.pyplot as plt
+        import matplotlib.colors as mcolors
+        c2 = plt.cm.Reds(np.linspace(0, 1, 32))
+        c1 = plt.cm.Blues_r(np.linspace(0, 1, 32))
+        c1 = np.vstack([c1, [1, 1, 1, 1]])
+        colors = np.vstack((c1, c2))
+        return mcolors.LinearSegmentedColormap.from_list('eddymap', colors)
+
     def plotbeam(self, ax, x0=0.125, y0=0.125, **kwargs):
         """
         Plot the sythensized beam on the provided axes.
@@ -1124,6 +1114,35 @@ class imagecube:
                     color=kwargs.pop('color', kwargs.pop('c', 'k')),
                     capthick=kwargs.pop('capthick', 1.5),
                     capsize=kwargs.pop('capsize', 1.25), **kwargs)
+
+    def plot_axes(self, ax, x0=0., y0=0., inc=0., PA=0., major=1.0, **kwargs):
+        """
+        Plot the major and minor axes on the provided axis.
+
+        Args:
+            ax (Matplotlib axes): Axes instance to plot onto.
+            x0 (optional[float]): Relative x-location of the center [arcsec].
+            y0 (optional[float]): Relative y-location of the center [arcsec].
+            inc (optional[float]): Inclination of the disk in [degrees].
+            PA (optional[float]): Position angle of the disk in [degrees].
+            major (optional[float]): Size of the major axis line in [arcsec].
+        """
+
+        # Default parameters plotting values.
+        ls = kwargs.pop('ls', kwargs.pop('linestyle', '--'))
+        lw = kwargs.pop('lw', kwargs.pop('linewidth', 0.5))
+        lc = kwargs.pop('c', kwargs.pop('color', 'k'))
+        zo = kwargs.pop('zorder', -2)
+
+        # Plotting.
+        PA = np.radians(PA)
+        ax.plot([major * np.cos(PA) - x0, major * np.cos(PA + np.pi) - x0],
+                [major * np.sin(PA) - y0, major * np.sin(PA + np.pi) - y0],
+                ls=ls, lw=lw, color=lc, zorder=zo)
+        minor = major * np.cos(np.radians(inc))
+        ax.plot([minor * np.cos(PA) - x0, minor * np.cos(PA + np.pi) - x0],
+                [minor * np.sin(PA) - y0, minor * np.sin(PA + np.pi) - y0],
+                ls=ls, lw=lw, color=lc, zorder=zo)
 
     def plot_surface(self, ax=None, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=0.0,
                      psi=0.0, z1=0.0, phi=1.0, tilt=0.0, r_min=0.0, r_max=None,
@@ -1563,12 +1582,175 @@ class imagecube:
         v2 = abs(mask - np.ones(self.data.shape) * v2[None, :, :])
         return np.where(np.logical_or(v1 <= dV, v2 <= dV), 1.0, 0.0)
 
+    def synthetic_obs(self, bmaj, bmin=None, bpa=0.0, rms=None, chan=None,
+                      nchan=None, rescale='auto', spectral_response=None,
+                      save=False):
+        """
+        Generate synthetic observations by convolving the data spatially and
+        spectrally and adding correlated noise.
+
+        Args:
+            bmaj (float): Beam major axis in [arcsec].
+            bmin (optional[float]): Beam minor axis in [arcsec].
+            bpa (optional[float]): Beam position angle in [degrees].
+            rms (optional[float]): RMS noise of the noise.
+            chan (optional[float]): Channel size (m/s) of the resulting data.
+            nchan (optional[int]): Number of channels of the resulting data. If
+                this would extend beyond the attached velocity then these edge
+                channels are ignored.
+            rescale (optional[int]): Rescaling factor for the pixels. If
+                ``rescale='auto'`` then the pixels will be rescaled so there's
+                5 pixels per bmin.
+            spectral_response (optional[str]): Type of spectral response to
+                include. ``'hanning'`` will include a triangle kernel, while
+                ``'averageX'``, where ``'X'`` is a number will use a simple
+                running average of ``X`` channels.
+            save (optional[bool/str]): If True, save the data as a new cube.
+                You may also provide a path to save to (noting that this will
+                overwrite anything).
+        """
+
+        # Check the input values.
+        bmin = bmaj if bmin is None else bmin
+        assert bmaj >= bmin, "bmaj >= bmin"
+        bpa = np.radians(bpa % 360.0)
+
+        # Copy the data and rescale it.
+        data = self.data.copy()
+        if type(rescale) in [int, float]:
+            if rescale < 1:
+                raise ValueError("rescale ({}) must be > 1.".format(rescale))
+        elif rescale == 'auto':
+            rescale = bmin / self.dpix / 5.0
+        if rescale:
+            from scipy.ndimage import zoom
+            data = np.array([zoom(d, 1. / rescale) for d in data])
+
+        # Rescale the axes to take care of silly things.
+        npix = data.shape[1]
+        axis = np.linspace(self.yaxis[0], self.yaxis[-1], npix)
+        span = axis.max() - axis.min()
+        shift = (self.dpix * rescale * data.shape[1] - span) / 2
+        axis = np.linspace(axis[0] - shift, axis[-1] - shift, npix)
+        dpix = np.diff(axis).mean()
+
+        # Resample the data in velocity space.
+        # Includes an interpolation of the data to resample.
+        if chan is not None:
+            if chan < self.chan:
+                raise ValueError("chan ({}) must be larger than ".format(chan)
+                                 + "input channel ({}).".format(self.chan))
+            vspan = self.velax.max() - self.velax.min()
+            if nchan is None:
+                nchan = vspan // chan
+            start = 0.5 * (vspan - nchan * chan)
+            velax = np.arange(0, nchan * chan, chan) + start
+
+            # Make sure the new axis doesn't overshoot the data.
+            if velax[0] < self.velax[0]:
+                velax = velax[abs(velax - self.velax[0]).argmin():]
+            if velax[-1] > self.velax[-1]:
+                velax = velax[:abs(velax - self.velax[-1]).argmin()]
+            nchan = velax.size
+
+            # Make a high-resolution cube to average down.
+            from scipy.interpolate import CubicSpline
+            velaxh = np.linspace(self.velax[0], self.velax[-1],
+                                 self.velax.size*10)
+            data_high = CubicSpline(self.velax, data, axis=0)(velaxh)
+            data = []
+            vbins = np.linspace(velax[0]-0.5*chan, velax[-1]+0.5*chan, nchan+1)
+            for v1, v2 in zip(vbins[:-1], vbins[1:]):
+                idxa = abs(velaxh - v1).argmin()
+                idxb = abs(velaxh - v2).argmin() + 1
+                data += [np.mean(data_high[idxa:idxb], axis=0)]
+            data = np.array(data)
+
+        else:
+            velax = self.velax
+
+        # Spatially convolve the data.
+        from astropy.convolution import convolve, Gaussian2DKernel
+        beam = Gaussian2DKernel(bmin/dpix/self.fwhm, bmaj/dpix/self.fwhm, bpa)
+        data = np.array([convolve(c, beam, boundary='extend') for c in data])
+
+        # Include a spectral response.
+        if spectral_response is not None:
+            if spectral_response == 'hanning':
+                kernel = np.array([0.25, 0.5, 0.25])
+            if 'average' in spectral_response:
+                try:
+                    kernel = int(spectral_response.replace('average', ''))
+                except:
+                    kernel = 2
+                kernel = np.ones(kernel) / kernel
+            data = np.array([[np.convolve(data[:, i, j], kernel, mode='same')
+                              for i in range(data.shape[1])]
+                             for j in range(data.shape[2])]).T
+
+        # Add the noise.
+        if rms is not None:
+            noise = np.random.normal(size=data.size).reshape(data.shape)
+            noise = np.array([convolve(c, beam, boundary='wrap') for c in noise])
+            if spectral_response is not None:
+                noise = np.array([[np.convolve(noise[:, i, j], kernel, mode='same')
+                                   for i in range(noise.shape[1])]
+                                  for j in range(noise.shape[2])]).T
+            data += noise * rms / np.std(noise)
+
+        # Save the cube.
+        if save:
+            # Open and attach data.
+            hdu = fits.PrimaryHDU()
+            hdu.data = data
+
+            # Right-Ascension axis.
+            hdu.header['CTYPE1'] = 'RA---SIN'
+            hdu.header['CDELT1'] = -dpix / 3600.
+            hdu.header['CRPIX1'] = data.shape[1] / 2 + 1
+            hdu.header['CRVAL1'] = self.yaxis[0] / 3600.
+            hdu.header['CUNIT1'] = 'deg'
+
+            # Declination axis.
+            hdu.header['CTYPE2'] = 'DEC--SIN'
+            hdu.header['CDELT2'] = dpix / 3600.
+            hdu.header['CRPIX2'] = data.shape[1] / 2 + 1
+            hdu.header['CRVAL2'] = self.yaxis[0] / 3600.
+            hdu.header['CUNIT2'] = 'deg'
+
+            # Velocity axis.
+            hdu.header['CTYPE3'] = 'VELO-LSR'
+            hdu.header['CDELT3'] = chan
+            hdu.header['CRPIX3'] = 1
+            hdu.header['CRVAL3'] = velax[0]
+            hdu.header['CUNIT3'] = 'm/s'
+
+            # Other.
+            hdu.header['BUNIT'] = self.header['BUNIT']
+            hdu.header['RESTFREQ'] = self.header['RESTFREQ']
+            hdu.header['BMAJ'] = bmaj / 3600.
+            hdu.header['BMIN'] = bmin / 3600.
+            hdu.header['BPA'] = np.degrees(bpa)
+
+            # Save the file.
+            if type(save) is not str:
+                fname = '.{:.2f}arcsec'.format(np.mean([bmaj, bmin]))
+                if rms is not None:
+                    fname += '.{:.2f}rms'.format(rms)
+                fname = self.path.replace('.fits', fname + '.fits')
+            else:
+                fname = save
+            hdu.writeto(fname.replace('.fits', '') + '.fits',
+                        overwrite=True, output_verify='fix')
+
+        return axis, velax, data
+
     # == Masking Functions == #
 
     def get_mask(self, r_min=None, r_max=None, exclude_r=False, PA_min=None,
                  PA_max=None, exclude_PA=False, x0=0.0, y0=0.0, inc=0.0,
-                 PA=0.0, z0=0.0, psi=1.0, z1=0.0, phi=1.0, tilt=0.0,
-                 z_func=None):
+                 PA=0.0, z0=0.0, psi=1.0, z1=0.0, phi=1.0, w_i=0.0, w_r=1.0,
+                 w_t=0.0, z_func=None, w_func=None):
         """
         Returns a 2D mask for pixels in the given region.
 
@@ -1610,8 +1792,9 @@ class imagecube:
             mask (ndarray): A 2D mask.
         """
         rvals, tvals, _ = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA, z0=z0,
-                                           psi=psi, z1=z1, phi=phi, tilt=tilt,
-                                           z_func=z_func, frame='polar')
+                                           psi=psi, z1=z1, phi=phi, w_i=w_i,
+                                           w_r=w_r, w_t=w_t, z_func=z_func,
+                                           w_func=w_func, frame='cylindrical')
         r_min = np.nanmin(rvals) if r_min is None else r_min
         r_max = np.nanmax(rvals) if r_max is None else r_max
         r_mask = np.logical_and(rvals >= r_min, rvals <= r_max)
@@ -1624,20 +1807,24 @@ class imagecube:
 
     # == Functions to read the data cube axes. == #
 
-    def _clip_cube(self, clip):
+    def _clip_cube(self, radius):
         """Clip the cube to +\- clip arcseconds from the origin."""
         if self.absolute:
             raise ValueError("Cannot clip with absolute coordinates.")
         xa = abs(self.xaxis - radius).argmin()
-        xa = xa - 1 if self.xaxis[xa] < radius else xa
+        if self.xaxis[xa] < radius:
+            xa -= 1
         xb = abs(self.xaxis + radius).argmin()
-        xb = xb + 1 if self.xaxis[xb + 1] < radius else xb
+        if -self.xaxis[xb] < radius:
+            xb += 1
         xb += 1
         ya = abs(self.yaxis + radius).argmin()
-        ya = ya - 1 if self.yaxis[ya] < radius else ya
+        if -self.yaxis[ya] < radius:
+            ya -= 1
         yb = abs(self.yaxis - radius).argmin()
-        yb = yb + 1 if self.yaxis[yb + 1] < radius else yb
-        yb += 2
+        if self.yaxis[yb] < radius:
+            yb += 1
+        yb += 1
         if self.data.ndim == 3:
             self.data = self.data[:, ya:yb, xa:xb]
         else:
