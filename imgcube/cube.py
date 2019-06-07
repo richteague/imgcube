@@ -210,7 +210,7 @@ class imagecube:
                     exclude_PA=False, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=0.0,
                     psi=1.0, z1=0.0, phi=1.0, w_i=0.0, w_r=1.0, w_t=0.0,
                     z_func=None, w_func=None, beam_spacing=True,
-                    return_theta=True, as_ensemble=False,
+                    return_theta=True, as_annulus=True,
                     suppress_warnings=True, remove_empty=True,
                     sort_spectra=True, **kwargs):
         """
@@ -252,7 +252,7 @@ class imagecube:
                 annulus such that each pixel is at least a beam FWHM apart. A
                 number can also be used in place of a boolean which will
                 describe the number of beam FWHMs to separate each sample by.
-            as_ensemble (Optional[bool]): If true, return an ensemble instance
+            annulus (Optional[bool]): If true, return an annulus instance
                 from `eddy`. Requires `eddy` to be installed.
 
         Returns:
@@ -893,6 +893,7 @@ class imagecube:
 
     def _radial_sampling(self, rbins=None, rvals=None):
         """Return default radial sampling if none are specified."""
+        print('UPDATE ME PLEASE!')
         if rbins is not None and rvals is not None:
             raise ValueError("Specify only 'rbins' or 'rvals', not both.")
         if rvals is not None:
