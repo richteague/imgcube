@@ -312,7 +312,7 @@ class imagecube:
 
         # Return the values in the requested form.
 
-        if as_ensemble:
+        if as_annulus:
             try:
                 from eddy.fit_annulus import annulus
             except ImportError:
@@ -753,8 +753,9 @@ class imagecube:
     # == Radial Profiles == #
 
     def radial_profile(self, rpnts=None, rbins=None, x0=0.0, y0=0.0, inc=0.0,
-                       PA=0.0, z0=0.0, psi=1.0, z1=0.0, phi=1.0, tilt=0.0,
-                       z_func=None, PA_min=None, PA_max=None, exclude_PA=False,
+                       PA=0.0, z0=0.0, psi=1.0, z1=0.0, phi=1.0, w_i=0.0,
+                       w_r=1.0, w_t=0.0, z_func=None, w_func=None,
+                       PA_min=None, PA_max=None, exclude_PA=False,
                        beam_spacing=False, collapse='max', clip_values=None,
                        statistic='mean', uncertainty='stddev', **kwargs):
         """
@@ -824,15 +825,16 @@ class imagecube:
 
         dvals = self._collapse_cube(method=collapse, clip_values=clip_values)
         rvals, tvals = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA, z0=z0,
-                                        psi=psi, z1=z1, phi=phi, tilt=tilt,
-                                        z_func=z_func)[:2]
+                                        psi=psi, z1=z1, phi=phi, w_i=w_i,
+                                        w_r=w_r, w_t=w_t, z_func=z_func,
+                                        w_func=w_func)[:2]
         rvals, tvals, dvals = rvals.flatten(), tvals.flatten(), dvals.flatten()
 
         if PA_min is not None or PA_max is not None:
             mask = self.get_mask(x0=x0, y0=y0, inc=inc, PA=PA, z0=z0, psi=psi,
-                                 z1=z1, phi=phi, tilt=tilt, z_func=z_func,
-                                 PA_min=PA_min, PA_max=PA_max,
-                                 exclude_PA=exclude_PA)
+                                 z1=z1, phi=phi, w_i=w_i, w_r=w_r, w_t=w_t,
+                                 z_func=z_func, w_func=w_func, PA_min=PA_min,
+                                 PA_max=PA_max, exclude_PA=exclude_PA)
             mask = mask.flatten()
             rvals, tvals, dvals = rvals[mask], tvals[mask], dvals[mask]
 
@@ -893,7 +895,7 @@ class imagecube:
 
     def _radial_sampling(self, rbins=None, rvals=None):
         """Return default radial sampling if none are specified."""
-        print('UPDATE ME PLEASE!')
+        print('UPDATE _RADIAL_SAMPLING PLEASE!')
         if rbins is not None and rvals is not None:
             raise ValueError("Specify only 'rbins' or 'rvals', not both.")
         if rvals is not None:
