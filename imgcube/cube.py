@@ -183,8 +183,8 @@ class imagecube:
         # Check the input variables.
 
         frame = frame.lower()
-        if frame not in ['cylindrical', 'polar']:
-            raise ValueError("frame must be 'cylindrical' or 'polar'.")
+        if frame not in ['cylindrical', 'cartesian']:
+            raise ValueError("frame must be 'cylindrical' or 'cartesian'.")
 
         # Define the emission surface function. Either use the simple double
         # power-law profile or the user-provied function.
@@ -447,8 +447,10 @@ class imagecube:
                                            frame='cartesian')
         x_pix = (np.ones(xdisk.shape) * self.xaxis[None, ::-1]).flatten()[::5]
         y_pix = (np.ones(ydisk.shape) * self.yaxis[:, None]).flatten()[::5]
-        x_int = griddata((x_pix, y_pix), xdisk.flatten()[::5], (xsky, ysky))
-        y_int = griddata((x_pix, y_pix), ydisk.flatten()[::5], (xsky, ysky))
+        x_int = griddata((x_pix, y_pix), xdisk.flatten()[::5], (xsky, ysky),
+                         method='nearest')
+        y_int = griddata((x_pix, y_pix), ydisk.flatten()[::5], (xsky, ysky),
+                         method='nearest')
 
         # Convert to output frame.
 
@@ -457,12 +459,19 @@ class imagecube:
         r_int, t_int = np.hypot(x_int, y_int), np.arctan2(y_int, x_int)
         return r_int, np.degrees(t_int)
 
-    def disk_to_sky(self, coords, frame='polar', x0=0.0, y0=0.0, inc=0.0,
-                    PA=0.0, z0=0.0, psi=1.0, z1=0.0, phi=0.0, tilt=0.0,
-                    return_idx=False):
+    def disk_to_sky(self, coords, frame_in='cylindrical', x0=0.0, y0=0.0,
+                    inc=0.0, PA=0.0, z0=0.0, psi=1.0, z1=0.0, phi=0.0, w_i=0.0,
+                    w_r=1.0, w_t=0.0, return_idx=False):
         """
         For a given disk midplane coordinate, either (r, theta) or (x, y),
-        return interpolated sky coordiantes in (x, y) for plotting.
+        return interpolated sky coordiantes in (x, y) for plotting. The input
+        needs to be a list like:
+
+            coords = ([r0, t0], [r1, t1], ..., [rN, tN])
+
+        If you have an array of values, rvals and tvals then,
+
+            coords = np.vstack([rvals, tvals]).T
 
         Args:
             coords (list): Midplane coordaintes to find in (x, y) in [arcsec,
@@ -482,9 +491,6 @@ class imagecube:
                 emission surface. Should be opposite sign to z0.
             phi (Optional[float]): Flaring angle correction term for the
                 emission surface.
-            tilt (Optional[float]): Value between -1 and 1, describing the
-                rotation of the disk. For negative values, the disk is rotating
-                clockwise on the sky.
             return_idx (Optional[bool]): If True, return the indices of the
                 nearest pixels rather than the interpolated values.
 
@@ -504,25 +510,25 @@ class imagecube:
 
         # Make sure input coords are cartesian.
 
-        frame = frame.lower()
-        if frame not in ['polar', 'cartesian']:
-            raise ValueError("frame must be 'polar' or 'cartesian'.")
+        frame_in = frame_in.lower()
+        if frame_in not in ['cylindrical', 'cartesian']:
+            raise ValueError("frame must be 'cylindrical' or 'cartesian'.")
         coords = np.atleast_2d(coords)
-        if coords.shape[0] != 2 and coords.shape[1] == 2:
-            coords = coords.T
-        if coords.shape[0] != 2:
-            raise ValueError("coords must be of shape [2 x N].")
-        if frame == 'polar':
-            xdisk = coords[0] * np.cos(np.radians(coords[1]))
-            ydisk = coords[0] * np.sin(np.radians(coords[1]))
+        if coords.shape[1] != 2:
+            raise ValueError("coords must be of shape [N x 3].")
+        if frame_in == 'cylindrical':
+            xdisk = coords[:, 0] * np.cos(np.radians(coords[:, 1]))
+            ydisk = coords[:, 0] * np.sin(np.radians(coords[:, 1]))
         else:
-            xdisk, ydisk = coords
+            xdisk, ydisk = coords.T
 
         # Grab disk coordinates and sky coordinates to interpolate between.
 
-        xdisk_grid, ydisk_grid = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA,
-                                                  z0=z0, psi=psi, z1=z1,
-                                                  phi=phi, tilt=tilt,
+        xdisk_grid, ydisk_grid = self.disk_coords(x0=x0, y0=y0,
+                                                  inc=inc, PA=PA,
+                                                  z0=z0, psi=psi,
+                                                  z1=z1, phi=phi,
+                                                  w_i=w_i, w_r=w_r, w_t=w_t,
                                                   frame='cartesian')[:2]
         xdisk_grid, ydisk_grid = xdisk_grid.flatten(), ydisk_grid.flatten()
         xsky_grid, ysky_grid = self._get_cart_sky_coords(x0=x0, y0=y0)[:2]
@@ -559,7 +565,7 @@ class imagecube:
         rvals, tvals = rvals.flatten(), tvals.flatten()
         dvals = self.data.flatten()
 
-        rgrid = rgrid if rgrid is not None else self._radial_sampling()[1]
+        rgrid = rgrid if rgrid is not None else self.radial_sampling()[1]
         tgrid = tgrid if tgrid is not None else np.linspace(-np.pi, np.pi, 180)
 
         # Add extra arrays to reach the edges.
@@ -819,7 +825,7 @@ class imagecube:
 
         # Define the points to sample the radial profile at.
 
-        rbins, x = self._radial_sampling(rbins=rbins, rvals=rpnts)
+        rbins, x = self.radial_sampling(rbins=rbins, rvals=rpnts)
 
         # Collapse and bin the data.
 
@@ -893,9 +899,22 @@ class imagecube:
         return np.nanstd([self.data[:int(N), sy:fy, sx:fx],
                           self.data[-int(N):, sy:fy, sx:fx]])
 
-    def _radial_sampling(self, rbins=None, rvals=None):
-        """Return default radial sampling if none are specified."""
-        print('UPDATE _RADIAL_SAMPLING PLEASE!')
+    def radial_sampling(self, rbins=None, rvals=None, spacing=0.25):
+        """
+        Return bins and bin center values. If the desired bin edges are known,
+        will return the bin edges and vice versa. If neither are known will
+        return default binning with the desired spacing.
+
+        Args:
+            rbins (optional[list]): List of bin edges.
+            rvals (optional[list]): List of bin centers.
+            spacing (optional[float]): Spacing of bin centers in units of beam
+                major axis.
+
+        Returns:
+            rbins (list): List of bin edges.
+            rpnts (list): List of bin centres.
+        """
         if rbins is not None and rvals is not None:
             raise ValueError("Specify only 'rbins' or 'rvals', not both.")
         if rvals is not None:
@@ -904,7 +923,7 @@ class imagecube:
         if rbins is not None:
             rvals = np.average([rbins[1:], rbins[:-1]], axis=0)
         else:
-            rbins = np.arange(0, self.xaxis.max(), 0.25 * self.bmaj)[1:]
+            rbins = np.arange(0, self.xaxis.max(), spacing * self.bmaj)[1:]
             rvals = np.average([rbins[1:], rbins[:-1]], axis=0)
         return rbins, rvals
 
@@ -1067,11 +1086,10 @@ class imagecube:
         import matplotlib.colors as mcolors
         c2 = plt.cm.Reds(np.linspace(0, 1, 32))
         c1 = plt.cm.Blues_r(np.linspace(0, 1, 32))
-        c1 = np.vstack([c1, [1, 1, 1, 1]])
-        colors = np.vstack((c1, c2))
+        colors = np.vstack((c1, np.ones(4), c2))
         return mcolors.LinearSegmentedColormap.from_list('eddymap', colors)
 
-    def plotbeam(self, ax, x0=0.125, y0=0.125, **kwargs):
+    def plotbeam(self, ax, x0=0.1, y0=0.1, **kwargs):
         """
         Plot the sythensized beam on the provided axes.
 
@@ -1118,7 +1136,7 @@ class imagecube:
                     capthick=kwargs.pop('capthick', 1.5),
                     capsize=kwargs.pop('capsize', 1.25), **kwargs)
 
-    def plot_axes(self, ax, x0=0., y0=0., inc=0., PA=0., major=1.0, **kwargs):
+    def plotaxes(self, ax, x0=0., y0=0., inc=0., PA=0., major=1.0, **kwargs):
         """
         Plot the major and minor axes on the provided axis.
 
@@ -1135,17 +1153,19 @@ class imagecube:
         ls = kwargs.pop('ls', kwargs.pop('linestyle', '--'))
         lw = kwargs.pop('lw', kwargs.pop('linewidth', 0.5))
         lc = kwargs.pop('c', kwargs.pop('color', 'k'))
+        ms = kwargs.pop('s', kwargs.pop('size', 1))
         zo = kwargs.pop('zorder', -2)
+        m = kwargs.pop('marker', 'o')
 
         # Plotting.
-        PA = np.radians(PA)
-        ax.plot([major * np.cos(PA) - x0, major * np.cos(PA + np.pi) - x0],
-                [major * np.sin(PA) - y0, major * np.sin(PA + np.pi) - y0],
-                ls=ls, lw=lw, color=lc, zorder=zo)
-        minor = major * np.cos(np.radians(inc))
-        ax.plot([minor * np.cos(PA) - x0, minor * np.cos(PA + np.pi) - x0],
-                [minor * np.sin(PA) - y0, minor * np.sin(PA + np.pi) - y0],
-                ls=ls, lw=lw, color=lc, zorder=zo)
+        coords = [[0.5, t] for t in np.arange(-180, 180, 90)]
+        x, y = self.disk_to_sky(coords, x0=x0, y0=y0, inc=inc, PA=PA)
+
+        for i in range(2):
+            ax.plot(x[i::2], y[i::2], ls=ls, lw=lw, color=lc, zorder=zo)
+        if dotted:
+            for xx, yy in zip(x, y):
+                ax.scatter(xx, yy, s=ms, marker=m, color=lc, zorder=zo, lw=lw)
 
     def plot_surface(self, ax=None, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=0.0,
                      psi=0.0, z1=0.0, phi=1.0, tilt=0.0, r_min=0.0, r_max=None,
@@ -1951,6 +1971,81 @@ class imagecube:
         data = self.data if data is None else data
         jy2k = 1e-26 * sc.c**2 / nu**2 / 2. / sc.k
         return data * self._calculate_beam_area_str() / jy2k
+
+    def spiral_coords(self, r_p, t_p, m=None, r_min=None, r_max=None,
+                      mstar=1.0, T0=20.0, Tq=-0.5, dist=100., clockwise=True,
+                      frame_out='cartesian'):
+        """
+        Spiral coordinates from Bae & Zhaohuan (2018a). In order to recover the
+        linear spirals from Rafikov (2002), use m >> 1.
+
+        Args:
+            r_p (float): Orbital radius of the planet in [arcsec].
+            t_p (float): Polar angle of planet relative to the red-shifted
+                major axis of the disk in [radians].
+            m (optional[int]): Azimuthal wavenumber of the spiral. If not
+                specified, will assume the dominant term based on the rotation
+                and temperature profiles.
+            r_min (optional[float]): Inner radius of the spiral in [arcsec].
+            r_max (optional[float]): Outer radius of the spiral in [arcsec].
+            mstar (optioanl[float]): Stellar mass of the central star in [Msun]
+                to calculate the rotation profile.
+            T0 (optional[float]): Gas temperature in [K] at 1 arcsec.
+            Tq (optional[float]): Exoponent of the radial gas temperature
+                profile.
+            dist (optional[float]): Source distance in [pc] used to scale
+                [arcsec] to [au] in the calculation of the rotation profile.
+            clockwise (optional[bool]): Direction of the spiral.
+            frame_out (optional[str]): Coordinate frame of the returned values,
+                either 'cartesian' or 'cylindrical'.
+
+        Returns:
+            ndarray:
+                Coordinates of the spiral in either cartestian or cylindrical
+                frame.
+        """
+
+        # Define the radial grid in [arcsec].
+        r_min = 0.1 if r_min is None else r_min
+        r_max = self.xaxis.max() if r_max is None else r_max
+        rvals = np.arange(r_min, r_max, 0.1 * self.dpix)
+        clockwise = 1.0 if clockwise is True else -1.0
+
+        # Define the physical properties as a function of radius. SI units.
+        omega = np.sqrt(sc.G * mstar * 1.988e30 * (rvals * sc.au * dist)**-3)
+        tgas = T0 * np.power(rvals, Tq)
+        cs = np.sqrt(sc.k * tgas / 2.37 / sc.m_p)
+        H = cs / omega
+
+        # Define the dominant wave number if not defined.
+        if m is None:
+            m = 0.5 * (r_p * dist * sc.au / H)[abs(rvals - r_p).argmin()]
+        m = np.round(m)
+        rmn = r_p * dist * sc.au * (1.0 - 1.0 / m)**(2./3.)
+        rmp = r_p * dist * sc.au * (1.0 + 1.0 / m)**(2./3.)
+
+        # Integrate the equation numerically.
+        x = rvals * dist * sc.au
+        y = omega * np.sqrt(abs((1 - (rvals / r_p)**(3./2.))**2 - m**-2.)) / cs
+        idx_n = abs(rvals * sc.au * dist - rmn).argmin()
+        idx_p = abs(rvals * sc.au * dist - rmp).argmin()
+        phi = np.ones(rvals.size) * t_p
+
+        for i, r in enumerate(x):
+            phi[i] = t_p - np.sign(r - r_p) * np.pi / 4. / m
+            if r <= rmn:
+                phi[i] -= clockwise * np.trapz(y[i:idx_n+1][::-1],
+                                               x=x[i:idx_n+1][::-1])
+            elif r >= rmp:
+                phi[i] -= clockwise * np.trapz(y[idx_p:i+1],
+                                               x=x[idx_p:i+1])
+            else:
+                phi[i] = np.nan
+
+        # Return the spirals.
+        if frame_out == 'cylindrical':
+            return rvals, phi
+        return rvals * np.cos(phi), rvals * np.sin(phi)
 
 
 def detect_peaks(x, mph=None, mpd=1, threshold=0, edge='rising',
