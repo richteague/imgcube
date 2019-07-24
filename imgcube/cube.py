@@ -12,7 +12,7 @@ class imagecube:
     disk_coords_niter = 20
 
     def __init__(self, path, kelvin=False, clip=None, resample=1, verbose=None,
-                 suppress_warnings=True, absolute=False, dx0=0.0, dy0=0.0):
+                 suppress_warnings=True, dx0=0.0, dy0=0.0):
         """
         Load up a FITS image cube.
 
@@ -54,10 +54,6 @@ class imagecube:
         self.header = fits.getheader(path)
 
         # Generate the cube axes.
-        self.absolute = False
-        if self.absolute and self.verbose:
-            print("Returning absolute coordinate values are not tested.")
-            print("WARNING: self.dpix will be strange.")
         self.xaxis = self._readpositionaxis(a=1)
         self.yaxis = self._readpositionaxis(a=2)
         self.nxpix = self.xaxis.size
@@ -849,17 +845,17 @@ class imagecube:
         ridxs = np.digitize(rvals, rbins)
         if statistic == 'mean':
             y = np.array([np.nanmean(dvals[ridxs == r])
-                          for r in range(rbins.size - 1)])
+                          for r in range(1, rbins.size)])
         else:
             y = np.array([np.nanmedian(dvals[ridxs == r])
-                          for r in range(rbins.size - 1)])
+                          for r in range(1, rbins.size)])
 
         if uncertainty == 'stddev':
             dy = np.array([np.nanstd(dvals[ridxs == r])
-                           for r in range(rbins.size - 1)])
+                           for r in range(1, rbins.size)])
         else:
             dy = np.array([np.nanpercentile(dvals[ridxs == r], [16, 50, 84])
-                           for r in range(rbins.size - 1)])
+                           for r in range(1, rbins.size)])
             dy = np.array([dy[1] - dy[0], dy[2] - dy[1]])
         return x, y, dy
 
@@ -963,13 +959,13 @@ class imagecube:
 
     @property
     def pix_per_beam(self):
-        """Pixels per beam."""
+        """Number of pixels per beam."""
         return self._calculate_beam_area_arcsec() / np.power(self.dpix, 2.0)
 
     @property
     def beam_per_pix(self):
         """Number of beams per pixel."""
-        return self._calculate_beam_area_pix() / self.dpix**2
+        return 1. / self.pix_per_beam
 
     @property
     def beam(self):
@@ -990,15 +986,6 @@ class imagecube:
             bmin *= nbeams
             bmaj *= nbeams
         return Gaussian2DKernel(bmin, bmaj, theta=np.radians(bpa))
-        # return Kernel(self._gaussian2D(bmin, bmaj, bpa + 90.).T)
-
-    def __gaussian2D(self, dx, dy, PA=0.0):
-        """2D Gaussian kernel in pixel coordinates."""
-        xm = np.arange(-4*np.nanmax([dy, dx]), 4*np.nanmax([dy, dx])+1)
-        x, y = np.meshgrid(xm, xm)
-        x, y = self._rotate_coords(x, y, PA)
-        k = np.power(x / dx, 2) + np.power(y / dy, 2)
-        return np.exp(-0.5 * k) / 2. / np.pi / dx / dy
 
     @staticmethod
     def _convolve_image(image, kernel, fast=True):
@@ -1022,8 +1009,8 @@ class imagecube:
 
     def add_correlated_noise(self, rms, bmaj, bmin=None, bpa=0.0, nchan=2):
         """Add the output of correlated_nosie() directly to self.data."""
-        self.data += self.correlated_noise(rms=rms, bmaj=bmaj, bmin=bmin, bpa=bpa,
-                                           nchan=nchan)
+        self.data += self.correlated_noise(rms=rms, bmaj=bmaj, bmin=bmin,
+                                           bpa=bpa, nchan=nchan)
 
     def correlated_noise(self, rms, bmaj, bmin=None, bpa=0.0, nchan=2):
         """
@@ -1313,10 +1300,10 @@ class imagecube:
             data = self.rotate_image(PA, data=data, save=False)
 
         # Make a radial profile of the peak values.
+        rvals = self._get_midplane_polar_coords(0.0, 0.0, inc, 0.0)[0]
+        rbins = np.arange(0, self.xaxis.max() + self.dpix, self.dpix)
         if threshold > 0.0:
             Tb = np.max(data, axis=0).flatten()
-            rvals = self._get_midplane_polar_coords(0.0, 0.0, inc, 0.0)[0]
-            rbins = np.arange(0, self.xaxis.max() + self.dpix, self.dpix)
             ridxs = np.digitize(rvals.flatten(), rbins)
             avgTb = [np.mean(Tb[ridxs == r]) for r in range(1, rbins.size)]
             kernel = np.ones(np.ceil(self.bmaj / self.dpix).astype('int'))
@@ -1377,6 +1364,7 @@ class imagecube:
         Returns:
             flux (ndarray): Array of the integrated flux in [Jy] values along
                 the attached velocity axis.
+            uncertainty (ndarray): Array of the uncertainties on ``flux``.
         """
         if self.data.ndim != 3:
             raise ValueError("Cannot make a spectrum from a 2D image.")
@@ -1432,8 +1420,7 @@ class imagecube:
                           dist=100., vlsr=0.0):
         """Return a Keplerian rotation profile (for the near side) in [m/s]."""
         rvals, tvals, zvals = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA,
-                                               z0=z0, psi=psi, z1=z1, phi=phi,
-                                               tilt=tilt)
+                                               z0=z0, psi=psi, z1=z1, phi=phi)
         vrot = sc.G * mstar * self.msun * np.power(rvals * dist * sc.au, 2.0)
         vrot *= np.power(np.hypot(rvals, zvals) * sc.au * dist, -3.0)
         return np.sqrt(vrot) * np.cos(tvals) * np.sin(np.radians(inc)) + vlsr
@@ -1472,7 +1459,7 @@ class imagecube:
     # == Functions to write a Keplerian mask for CLEANing. == #
 
     def CLEAN_mask(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=0.0, psi=1.0,
-                   z1=0.0, phi=1.0, tilt=0.0, mstar=1.0, dist=100.,
+                   z1=0.0, phi=1.0, mstar=1.0, dist=100.,
                    r_max=None, r_min=None, vlsr=0.0, dV0=500., dVq=-0.4,
                    nbeams=0.0, fname=None, fast=True, return_mask=False):
         """
@@ -1533,7 +1520,7 @@ class imagecube:
         # Loop over all the systemic velocities.
         mask = [self._keplerian_mask(x0=x0, y0=y0, inc=inc, PA=PA,
                                      z0=0.0, psi=psi, z1=z1, phi=phi,
-                                     tilt=tilt, mstar=mstar, r_max=r_max,
+                                     mstar=mstar, r_max=r_max,
                                      r_min=r_min, dist=dist, vlsr=v, dV=dV0,
                                      dVq=dVq) for v in vlsr]
         mask = np.where(np.nansum(mask, axis=0) > 0, 1, 0)
@@ -1571,25 +1558,25 @@ class imagecube:
         if dVq == 0.0:
             return dV * np.ones((self.nypix, self.nxpix))
         rdisk = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA, z0=z0, psi=psi,
-                                 z1=z1, phi=phi, tilt=tilt)[0]
+                                 z1=z1, phi=phi)[0]
         return dV * np.power(rdisk, dVq)
 
     def _keplerian_mask(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=0.0, psi=1.0,
-                        z1=0.0, phi=1.0, tilt=0.0, mstar=1.0, r_max=None,
+                        z1=0.0, phi=1.0, mstar=1.0, r_max=None,
                         r_min=None, dist=100, vlsr=0.0, dV=250., dVq=0.0):
         """Generate the Keplerian mask as a cube. dV is FWHM of line."""
         mask = np.ones(self.data.shape) * self.velax[:, None, None]
         r_min = 0.0 if r_min is None else r_min
         r_max = 1e5 if r_max is None else r_max
         dV = self._dV_profile(x0=x0, y0=y0, inc=inc, PA=PA, z0=z0, psi=psi,
-                              z1=z1, phi=phi, tilt=tilt, dV=dV, dVq=dVq)
+                              z1=z1, phi=phi, dV=dV, dVq=dVq)
 
         # Rotation of the front side of the disk.
         v1 = self.keplerian_profile(x0=x0, y0=y0, inc=inc, PA=PA, z0=z0,
-                                    psi=psi, z1=z1, phi=phi, tilt=tilt,
+                                    psi=psi, z1=z1, phi=phi,
                                     mstar=mstar, dist=dist, vlsr=vlsr)
         rr = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA, z0=z0, psi=psi,
-                              z1=z1, phi=phi, tilt=tilt)[0]
+                              z1=z1, phi=phi)[0]
         v1 = np.where(np.logical_and(rr >= r_min, rr <= r_max), v1, 1e20)
         v1 = abs(mask - np.ones(self.data.shape) * v1[None, :, :])
         if z0 == 0.0 and z1 == 0.0:
@@ -1597,10 +1584,10 @@ class imagecube:
 
         # Rotation of the far side of the disk if appropriate.
         v2 = self.keplerian_profile(x0=x0, y0=y0, inc=inc, PA=PA, z0=-z0,
-                                    psi=psi, z1=-z1, phi=phi, tilt=tilt,
+                                    psi=psi, z1=-z1, phi=phi,
                                     mstar=mstar, dist=dist, vlsr=vlsr)
         rr = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA, z0=-z0, psi=psi,
-                              z1=-z1, phi=phi, tilt=tilt)[0]
+                              z1=-z1, phi=phi)[0]
         v2 = np.where(np.logical_and(rr >= r_min, rr <= r_max), v2, 1e20)
         v2 = abs(mask - np.ones(self.data.shape) * v2[None, :, :])
         return np.where(np.logical_or(v1 <= dV, v2 <= dV), 1.0, 0.0)
