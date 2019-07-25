@@ -1819,8 +1819,6 @@ class imagecube:
 
     def _clip_cube(self, radius):
         """Clip the cube to +\- clip arcseconds from the origin."""
-        if self.absolute:
-            raise ValueError("Cannot clip with absolute coordinates.")
         xa = abs(self.xaxis - radius).argmin()
         if self.xaxis[xa] < radius:
             xa -= 1
@@ -1858,16 +1856,11 @@ class imagecube:
             raise ValueError("'a' must be in [0, 1].")
         a_len = self.header['naxis%d' % a]
         a_del = self.header['cdelt%d' % a]
-        if a == 1 and self.absolute:
-            a_del /= np.cos(np.radians(self.header['crval2']))
         a_pix = self.header['crpix%d' % a]
         a_ref = self.header['crval%d' % a]
-        if not self.absolute:
-            a_ref = 0.0
-            a_pix -= 0.5
+        a_ref = 0.0
+        a_pix -= 0.5
         axis = a_ref + (np.arange(a_len) - a_pix + 1.0) * a_del
-        if self.absolute:
-            return axis
         return 3600 * axis
 
     def _readrestfreq(self):
