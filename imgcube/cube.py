@@ -628,9 +628,13 @@ class imagecube:
         y0, x0 = -dy0 / self.dpix, dx0 / self.dpix
         data = data if data is not None else self.data
         to_shift = np.where(np.isfinite(data), data, 0.0)
+        if to_shift.ndim == 2:
+            to_shift = np.array([to_shift])
         shifted = np.array([shift(c, [y0, x0]) for c in to_shift])
         if not save:
             return shifted
+        if data.ndim == 2:
+            shifted = shifted[0]
         self.data = shifted
 
     def rotate_image(self, PA, data=None, save=True):
@@ -639,10 +643,14 @@ class imagecube:
         PA -= 90.0
         data = data if data is not None else self.data
         to_rotate = np.where(np.isfinite(data), data, 0.0)
+        if to_rotate.ndim == 2:
+            to_rotate = np.array([to_rotate])
         rotated = np.array([rotate(c, PA, reshape=False) for c in to_rotate])
         if not save:
             return rotated
-        self.data = data
+        if data.ndim == 2:
+            rotated = rotated[0]
+        self.data = rotated
 
     def _get_flared_cart_coords_forward(self, x0, y0, inc, PA, func, extend=2,
                                         oversample=0.5, gridded=True):
@@ -758,8 +766,9 @@ class imagecube:
                        PA=0.0, z0=0.0, psi=1.0, z1=0.0, phi=1.0, w_i=0.0,
                        w_r=1.0, w_t=0.0, z_func=None, w_func=None,
                        PA_min=None, PA_max=None, exclude_PA=False,
-                       beam_spacing=False, collapse='max', clip_values=None,
-                       statistic='mean', uncertainty='stddev', **kwargs):
+                       beam_spacing=False, data=None, collapse='max',
+                       clip_values=None, statistic='mean',
+                       uncertainty='stddev', **kwargs):
         """
         Returns a radial profile of the data. If the data is 3D, then it is
         collapsed along the spectral axis with some provided function.
@@ -781,9 +790,6 @@ class imagecube:
                 emission surface. Should be opposite sign to z0.
             phi (Optional[float]): Flaring angle correction term for the
                 emission surface.
-            tilt (Optional[float]): Value between -1 and 1, describing the
-                rotation of the disk. For negative values, the disk is rotating
-                clockwise on the sky.
             PA_min (Optional[float]): Minimum polar angle of the segment of the
                 annulus in [degrees]. Note this is the polar angle, not the
                 position angle.
@@ -792,6 +798,8 @@ class imagecube:
                 position angle.
             exclude_PA (Optional[bool]): If True, exclude the provided polar
                 angle range rather than include.
+            data (Optional[ndarray]): Data to use to create the profile, if not
+                the attached data array.
             collapse (Optional[str]): Method used to collapse 3D data. Must be
                 'max' to take the maximum value, 'sum' to sum along the
                 spectral axis or 'int' to integrate along the spectral axis.
@@ -824,8 +832,13 @@ class imagecube:
         rbins, x = self.radial_sampling(rbins=rbins, rvals=rpnts)
 
         # Collapse and bin the data.
-
-        dvals = self._collapse_cube(method=collapse, clip_values=clip_values)
+        if data is None:
+            dvals = self._collapse_cube(method=collapse,
+                                        clip_values=clip_values)
+        else:
+            if data.ndim != 2:
+                raise ValueError("If providing own data, must be 2D!")
+            dvals = data.flatten()
         rvals, tvals = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA, z0=z0,
                                         psi=psi, z1=z1, phi=phi, w_i=w_i,
                                         w_r=w_r, w_t=w_t, z_func=z_func,
