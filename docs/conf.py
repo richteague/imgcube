@@ -37,7 +37,7 @@ extensions = [
     'sphinx.ext.imgmath',
     #'nbsphinx',
 ]
-master_doc = "index"
+master_doc = "api"
 
 # Get that autodoc working.
 autodoc_mock_imports = ['astropy', 'scipy', 'eddy', 'numpy']
