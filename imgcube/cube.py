@@ -156,9 +156,14 @@ class imagecube:
                 emission surface. Should be opposite sign to z0.
             phi (Optional[float]): Flaring angle correction term for the
                 emission surface.
-            tilt (Optional[float]): Value between -1 and 1, describing the
-                rotation of the disk. For negative values, the disk is rotating
-                clockwise on the sky.
+            w_i (Optional[float]): Warp inclination in [degrees] at the disk
+                center.
+            w_r (Optional[float]): Scale radius of the warp in [arcsec].
+            w_t (Optional[float]): Angle of nodes of the warp in [degrees].
+            z_func (Optional[callable]): User-defined function returning z in
+                [arcsec] at a given radius in [arcsec].
+            w_func (Optional[callable]): User-defined function returning z_warp
+                in [arcsec] at a given radius in [arcsec].
             frame (Optional[str]): Frame of reference for the returned
                 coordinates. Either 'polar' or 'cartesian'.
             z_func (Optional[function]): A function which provides z(r). Note
@@ -981,6 +986,16 @@ class imagecube:
         return 1. / self.pix_per_beam
 
     @property
+    def beam_area_arcsec(self):
+        """Beam area in square arcseconds."""
+        return self._calculate_beam_area_arcsec()
+
+    @property
+    def beam_area_str(self):
+        """Beam area in steradians."""
+        return self._calculate_beam_area_str()
+
+    @property
     def beam(self):
         """Returns the beam parameters in ["], ["], [deg]."""
         return self.bmaj, self.bmin, self.bpa
@@ -1261,12 +1276,175 @@ class imagecube:
                    linewidths=lw, linestyles='--', zorder=zo)
         return ax
 
-    def polar_plot(self, ax=None, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=0.0,
-                   psi=0.0, z1=0.0, phi=1.0, tilt=0.0):
+    def polar_plot(self, rgrid=None, tgrid=None, x0=0.0, y0=0.0, inc=0.0,
+                   PA=0.0, z0=0.0, psi=0.0, z1=0.0, phi=1.0, w_i=0.0, w_r=1.0,
+                   w_t=0.0, z_func=None, w_func=None, data=None,
+                   collapse='max', clip_values=None, griddata_kwargs=None,
+                   ax=None, xaxis='radius', imshow_kwargs=None):
         """
-        What.
+        Plots the polar deprojection (using self.deproject_data_polar()) of the
+        attached data. You can also specify your own data if you want to
+
+        Args:
+            rgrid (Optional[array]): Radial
+            x0 (Optional[float]): Source right ascension offset [arcsec].
+            y0 (Optional[float]): Source declination offset [arcsec].
+            inc (Optional[float]): Source inclination [deg].
+            PA (Optional[float]): Source position angle [deg]. Measured
+                between north and the red-shifted semi-major axis in an
+                easterly direction.
+            z0 (Optional[float]): Aspect ratio at 1" for the emission surface.
+                To get the far side of the disk, make this number negative.
+            psi (Optional[float]): Flaring angle for the emission surface.
+            z1 (Optional[float]): Aspect ratio correction term at 1" for the
+                emission surface. Should be opposite sign to z0.
+            phi (Optional[float]): Flaring angle correction term for the
+                emission surface.
+            w_i (Optional[float]): Warp inclination in [degrees] at the disk
+                center.
+            w_r (Optional[float]): Scale radius of the warp in [arcsec].
+            w_t (Optional[float]): Angle of nodes of the warp in [degrees].
+            z_func (Optional[callable]): User-defined function returning z in
+                [arcsec] at a given radius in [arcsec].
+            w_func (Optional[callable]): User-defined function returning z_warp
+                in [arcsec] at a given radius in [arcsec].
+            data (Optional[array]): Data to deproject, otherwise use the
+                attached data. If providing data, it must already be collapsed
+                to a 2D array.
+            collapse (Optional[str]): Method used to collapse 3D data. Must be
+                'max' to take the maximum value, 'sum' to sum along the
+                spectral axis or 'int' to integrate along the spectral axis.
+            clip_values (Optional[float/iterable]): Clip the data values. If a
+                single value is given, clip all values below this, if two
+                values are given, clip values between them.
+            ax (Optional[Matplolib axis]): Axes to plot the data on.
+            xaxis (Optional[str]): Which value to have along the x-axis, either
+                'radius' or 'polar angle'.
+            imshow_kwargs(Optional[dict]): Kwargs to be passed to imshow.
+
+        Returns:
+            ax (Matoplot axis): Axis on which the plot is plotted.
+
         """
-        return
+        gridded = self.deproject_data_polar(rgrid=rgrid, tgrid=tgrid, x0=x0,
+                                            y0=y0, inc=inc, PA=PA, z0=z0,
+                                            psi=psi, z1=z1, phi=phi, w_i=w_i,
+                                            w_r=w_r, w_t=w_t, z_func=z_func,
+                                            w_func=w_func, data=data,
+                                            collapse=collapse,
+                                            clip_values=clip_values,
+                                            griddata_kwargs=griddata_kwargs)
+        rgrid, tgrid, dgrid = gridded
+
+        import matplotlib.pyplot as plt
+
+        xaxis = xaxis.lower()
+        if xaxis not in ['radius', 'polar angle']:
+            raise ValueError("'xaxis' must be 'radius' or 'polar angle'.")
+
+        if ax is None:
+            _, ax = plt.subplots()
+
+        imshow_kwargs = {} if imshow_kwargs is None else imshow_kwargs
+        _ = imshow_kwargs.pop('origin', None)
+        _ = imshow_kwargs.pop('extent', None)
+        aspect = imshow_kwargs.pop('aspect', 'auto')
+
+        if xaxis != 'radius':
+            dgrid = dgrid.T
+            extent = [tgrid[0], tgrid[-1], rgrid[0], rgrid[-1]]
+            ylabel, xlabel = 'Radius (arcsec)', 'Polar Angle (degrees)'
+        else:
+            extent = [rgrid[0], rgrid[-1], tgrid[0], tgrid[-1]]
+            xlabel, ylabel = 'Radius (arcsec)', 'Polar Angle (degrees)'
+
+        im = ax.imshow(dgrid, origin='lower', extent=extent, aspect=aspect,
+                       **imshow_kwargs)
+        cb = plt.colorbar(im, pad=0.02)
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(ylabel)
+        return ax
+
+    def deproject_data_polar(self, rgrid=None, tgrid=None, x0=0.0, y0=0.0,
+                             inc=0.0, PA=0.0, z0=0.0, psi=0.0, z1=0.0, phi=1.0,
+                             w_i=0.0, w_r=1.0, w_t=0.0, z_func=None,
+                             w_func=None, data=None, collapse='max',
+                             clip_values=None, griddata_kwargs=None):
+        """
+        Deproject the data into (r, theta) coordinates based on the geometrical
+        properties provided.
+
+        Args:
+            x0 (Optional[float]): Source right ascension offset [arcsec].
+            y0 (Optional[float]): Source declination offset [arcsec].
+            inc (Optional[float]): Source inclination [deg].
+            PA (Optional[float]): Source position angle [deg]. Measured
+                between north and the red-shifted semi-major axis in an
+                easterly direction.
+            z0 (Optional[float]): Aspect ratio at 1" for the emission surface.
+                To get the far side of the disk, make this number negative.
+            psi (Optional[float]): Flaring angle for the emission surface.
+            z1 (Optional[float]): Aspect ratio correction term at 1" for the
+                emission surface. Should be opposite sign to z0.
+            phi (Optional[float]): Flaring angle correction term for the
+                emission surface.
+            w_i (Optional[float]): Warp inclination in [degrees] at the disk
+                center.
+            w_r (Optional[float]): Scale radius of the warp in [arcsec].
+            w_t (Optional[float]): Angle of nodes of the warp in [degrees].
+            z_func (Optional[callable]): User-defined function returning z in
+                [arcsec] at a given radius in [arcsec].
+            w_func (Optional[callable]): User-defined function returning z_warp
+                in [arcsec] at a given radius in [arcsec].
+            data (Optional[array]): Data to deproject, otherwise use the
+                attached data. If providing data, it must already be collapsed
+                to a 2D array.
+            collapse (Optional[str]): Method used to collapse 3D data. Must be
+                'max' to take the maximum value, 'sum' to sum along the
+                spectral axis or 'int' to integrate along the spectral axis.
+            clip_values (Optional[float/iterable]): Clip the data values. If a
+                single value is given, clip all values below this, if two
+                values are given, clip values between them.
+            griddata_kwargs (Optional[dict]): Kwargs to be passed to gridddata.
+
+        Returns:
+            rgrid: Radial grid to deproject onto in [arcsec].
+            tgrid: Polar angle grid to deproject onto in [degrees].
+            dgrid: Deprojected data array.
+        """
+
+        # 1 - collapse the data.
+        if data is None:
+            dvals = self._collapse_cube(method=collapse,
+                                        clip_values=clip_values).flatten()
+        else:
+            if data.ndim != 2:
+                raise ValueError("If providing own data, must be 2D!")
+            dvals = data.flatten()
+
+        # 2 - define the grids. convert the polar grids to radians.
+        rvals, tvals, _ = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA, z0=z0,
+                                           psi=psi, z1=z1, phi=phi, w_i=w_i,
+                                           w_r=w_r, w_t=w_t, z_func=z_func,
+                                           w_func=w_func)
+        rvals, tvals = rvals.flatten(), tvals.flatten()
+        if rvals.shape != dvals.shape:
+            raise ValueError("Mismatch in 'rvals' and 'dvals' shapes.")
+        if rgrid is None:
+            rgrid = np.arange(self.bmaj, self.xaxis.max(), 2.*self.dpix)
+        if tgrid is None:
+            tgrid = np.linspace(-3.2, 3.2, 61)
+        else:
+            tgrid = np.radians(tgrid)
+
+        # 3 - grid the data.
+        from scipy.interpolate import griddata
+        griddata_kwargs = {} if griddata_kwargs is None else griddata_kwargs
+        method = griddata_kwargs.pop('method', 'nearest')
+        dgrid = griddata(points=(rvals, tvals), values=dvals,
+                         xi=(rgrid[None, :], tgrid[:, None]),
+                         method=method, **griddata_kwargs)
+        return rgrid, np.degrees(tgrid), dgrid
 
     # == Emission Height Functions == #
 
