@@ -5,38 +5,36 @@ import scipy.constants as sc
 
 
 class imagecube:
+    """
+    Load up a FITS image cube.
+
+    Args:
+        path (str): Relative path to the FITS cube.
+        kelvin (Optional[bool/str]): Convert the brightness units to [K].
+            If True, use the full Planck law, or if 'RJ' use the
+            Rayleigh-Jeans approximation. This is not as accurate but does
+            not suffer as much in the low intensity regime.
+        clip (Optional[float]): Clip the image cube down to a FOV spanning
+            (2 * clip) in [arcseconds].
+        resample (Optional[int]): Resample the data spectrally, averaging
+            over `resample` number of channels.
+        verbose (Optional[bool]): Print out warning messages messages.
+        suppress_warnings (Optional[bool]): Suppress warnings from other
+            Python pacakges (for example numpy). If this is selected then
+            verbose will be set to False unless specified.
+        dx0 (Optional[float]): Recenter the image to this right ascencion
+            offset [arcsec].
+        dy0 (Optional[float]): Recenter the image to this declination
+            offset [arcsec].
+    """
 
     # Disk specific units.
     msun = 1.988e30
-    fwhm = 2. * np.sqrt(2 * np.log(2))
+    fwhm = 2.35482004503
     disk_coords_niter = 20
 
     def __init__(self, path, kelvin=False, clip=None, resample=1, verbose=None,
                  suppress_warnings=True, dx0=0.0, dy0=0.0):
-        """
-        Load up a FITS image cube.
-
-        Args:
-            path (str): Relative path to the FITS cube.
-            kelvin (Optional[bool/str]): Convert the brightness units to [K].
-                If True, use the full Planck law, or if 'RJ' use the
-                Rayleigh-Jeans approximation. This is not as accurate but does
-                not suffer as much in the low intensity regime.
-            clip (Optional[float]): Clip the image cube down to a FOV spanning
-                (2 * clip) in [arcseconds].
-            resample (Optional[int]): Resample the data spectrally, averaging
-                over `resample` number of channels.
-            verbose (Optional[bool]): Print out warning messages messages.
-            suppress_warnings (Optional[bool]): Suppress warnings from other
-                Python pacakges (for example numpy). If this is selected then
-                verbose will be set to False unless specified.
-            dx0 (Optional[float]): Recenter the image to this right ascencion
-                offset [arcsec].
-            dy0 (Optional[float]): Recenter the image to this declination
-                offset [arcsec].
-        Returns:
-            None)
-        """
 
         # Suppres warnings.
         if suppress_warnings:
@@ -258,10 +256,9 @@ class imagecube:
 
         Returns:
             spectra (ndarray): The spectra from each pixel in the annulus.
-            theta (ndarray): The midplane polar angles in [radians] of each of
-                the returned spectra.
-            ensemble (annulus instance): An `eddy` annulus instance if
-                as_ensemble == True.
+            ``theta`` (ndarray): The midplane polar angles in [radians] of each
+            of the returned spectra. ensemble (annulus instance): An ``eddy``
+            annulus instance if ``as_ensemble == True``.
         """
 
         dvals = self.data.copy()
@@ -332,7 +329,9 @@ class imagecube:
                  psi=1.0, z1=0.0, phi=1.0, tilt=0.0, beam_spacing=True,
                  options=None):
         """
-        Wrapper for the `get_vlos` function in eddy.fit_annulus.
+        Wrapper for the ``get_vlos`` function in ``eddy.fit_annulus``.
+
+        Args:
             r_min (float): Minimum midplane radius of the annulus in [arcsec].
             r_max (float): Maximum midplane radius of the annulus in [arcsec].
             PA_min (Optional[float]): Minimum polar angle of the segment of the
@@ -363,7 +362,7 @@ class imagecube:
                 annulus such that each pixel is at least a beam FWHM apart. A
                 number can also be used in place of a boolean which will
                 describe the number of beam FWHMs to separate each sample by.
-            options (Optional[dict]): Dictionary of options for `get_vlos`.
+            options (Optional[dict]): Dictionary of options for ``get_vlos``.
 
         Returns:
             TBD
@@ -1553,9 +1552,9 @@ class imagecube:
                 values are given, clip values between them.
 
         Returns:
-            flux (ndarray): Array of the integrated flux in [Jy] values along
-                the attached velocity axis.
-            uncertainty (ndarray): Array of the uncertainties on ``flux``.
+            ``flux`` (ndarray): Array of the integrated flux in [Jy] values
+            along the attached velocity axis. ``uncertainty`` (ndarray): Array
+            of the uncertainties on ``flux``.
         """
         if self.data.ndim != 3:
             raise ValueError("Cannot make a spectrum from a 2D image.")
@@ -1586,11 +1585,11 @@ class imagecube:
             Coming...
 
         Returns:
-            x (ndarray[float]): Spectral axis of the deprojected spectrum.
-            y (ndarray[float]): Spectrum, either flux density or brightness
-                temperature depending on the units of the cube.
-            dy (ndarray[float]): Uncertainty on each y value based on the
-                scatter in the resampled bins.
+            ``x`` (ndarray[float]): Spectral axis of the deprojected spectrum.
+            ``y`` (ndarray[float]): Spectrum, either flux density or brightness
+            temperature depending on the units of the cube. ``dy``
+            (ndarray[float]): Uncertainty on each y value based on the scatter
+            in the resampled bins.
         """
         annulus = self.get_annulus(r_min=r_min, r_max=r_max, PA_min=PA_min,
                                    PA_max=PA_max, exclude_PA=exclude_PA, x0=x0,
