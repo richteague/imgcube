@@ -6,22 +6,20 @@ import scipy.constants as sc
 
 class imagecube:
     """
-    Load up a FITS image cube.
-
     Args:
         path (str): Relative path to the FITS cube.
         kelvin (Optional[bool/str]): Convert the brightness units to [K].
-            If True, use the full Planck law, or if 'RJ' use the
+            If ``True``, use the full Planck law, or if 'RJ' use the
             Rayleigh-Jeans approximation. This is not as accurate but does
             not suffer as much in the low intensity regime.
-        clip (Optional[float]): Clip the image cube down to a FOV spanning
-            (2 * clip) in [arcseconds].
+        clip (Optional[float]): Clip the image cube down to a field of view
+            spanning (2 * clip) in [arcsec].
         resample (Optional[int]): Resample the data spectrally, averaging
-            over `resample` number of channels.
+            over ``resample`` number of channels.
         verbose (Optional[bool]): Print out warning messages messages.
         suppress_warnings (Optional[bool]): Suppress warnings from other
             Python pacakges (for example numpy). If this is selected then
-            verbose will be set to False unless specified.
+            ``verbose`` will be set to ``False`` unless specified.
         dx0 (Optional[float]): Recenter the image to this right ascencion
             offset [arcsec].
         dy0 (Optional[float]): Recenter the image to this declination
@@ -29,7 +27,8 @@ class imagecube:
     """
 
     # Disk specific units.
-    msun = 1.988e30
+
+    msun = 1.98847e30
     fwhm = 2.35482004503
     disk_coords_niter = 20
 
@@ -37,6 +36,7 @@ class imagecube:
                  suppress_warnings=True, dx0=0.0, dy0=0.0):
 
         # Suppres warnings.
+
         if suppress_warnings:
             import warnings
             warnings.filterwarnings("ignore")
@@ -45,6 +45,7 @@ class imagecube:
             self.verbose = True if verbose is None else verbose
 
         # Read in the data and header.
+
         self.path = os.path.expanduser(path)
         self.fname = self.path.split('/')[-1]
         self.data = np.squeeze(fits.getdata(self.path))
@@ -52,6 +53,7 @@ class imagecube:
         self.header = fits.getheader(path)
 
         # Generate the cube axes.
+
         self.xaxis = self._readpositionaxis(a=1)
         self.yaxis = self._readpositionaxis(a=2)
         self.nxpix = self.xaxis.size
@@ -60,10 +62,12 @@ class imagecube:
                              abs(np.diff(self.yaxis))])
 
         # Recenter the image if requested.
+
         if (dx0 != 0.0) or (dy0 != 0.0):
             self.shift_center(dx0=dx0, dy0=dy0, save=True)
 
         # Spectral axis. Make sure velocity is increasing.
+
         self.nu = self._readrestfreq()
         try:
             self.velax = self._readvelocityaxis()
@@ -82,12 +86,14 @@ class imagecube:
         # Get the beam properties of the beam. If a CASA beam table is found,
         # take the median values. If neither is specified, assume that the
         # pixel size is the beam size.
+
         self._readbeam()
 
         # Convert brightness to Kelvin if appropriate. If kelvin = 'RJ' then
         # use the Rayleigh-Jeans approximation. If the approximation is not
         # used then the non-linearity of the conversion means the noise is
         # horrible.
+
         try:
             self.bunit = self.header['bunit'].lower()
         except:
@@ -106,10 +112,12 @@ class imagecube:
             self.bunit = 'k'
 
         # Clip the clube down to a smaller field of view.
+
         if clip is not None:
             self._clip_cube(clip)
 
         # Resample the data by a factor by a factor of N.
+
         if resample <= 0:
             raise ValueError("'resample' must be equal to or larger than 0.")
         elif resample > 1:
@@ -130,15 +138,31 @@ class imagecube:
 
     def disk_coords(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=0.0, psi=0.0,
                     z1=0.0, phi=0.0, w_i=0.0, w_r=1.0, w_t=0.0, z_func=None,
-                    w_func=None, extend=2., oversample=1, frame='cylindrical'):
-        """
+                    w_func=None, frame='cylindrical'):
+        r"""
         Get the disk coordinates given certain geometrical parameters and an
         emission surface. The emission surface is parameterized as a powerlaw
-        profile: z(r) = z0 * (r / 1")^psi. For a razor thin disk, z0 = 0.0,
-        while for a conical disk, as described in Rosenfeld et al. (2013),
-        psi = 1.0. A correction term, z' = z1 * (r / 1")^phi can be included
-        to replicate the downward curve of the emission surface in the outer
-        disk.
+        profile:
+
+        .. math::
+
+            z(r) = z_0 \times \left(\frac{r}{1^{\prime\prime}}\right)^{\psi} +
+            z_1 \times \left(\frac{r}{1^{\prime\prime}}\right)^{\varphi}
+
+        Where both ``z0`` and ``z1`` are given in [arcsec]. For a razor thin
+        disk, ``z0=0.0``, while for a conical disk, as described in Rosenfeld
+        et al. (2013), ``psi=1.0``. We can also include a warp which is
+        parameterized by,
+
+        .. math::
+
+            z_{\rm warp}(r,\, t) = r \times \tan \left(w_i \times \exp\left(-
+            \frac{r^2}{2 w_r^2} \right) \times \sin(t - w_t)\right)
+
+        where ``w_i`` is the inclination in [radians] describing the warp at
+        the disk center. The width of the warp is given by ``w_r`` [arcsec] and
+        ``w_t`` in [radians] is the angle of nodes (where the warp is zero),
+        relative to the position angle of the disk, measured east of north.
 
         Args:
             x0 (Optional[float]): Source right ascension offset [arcsec].
@@ -167,16 +191,16 @@ class imagecube:
             z_func (Optional[function]): A function which provides z(r). Note
                 that no checking will occur to make sure this is a valid
                 function.
-            extend (Optional[float]): Factor to extend the axis of the
-                attached cube for the modelling.
-            oversample (Optional[float]): Rescale the number of pixels along
-                each axis. A larger number gives a better result, but at the
-                cost of computation time.
+            w_func (Optional[function]): A function which provides z_warp(r).
+                Note that no checking will occur to make sure this is a valid
+                function.
+            frame (Optional[str]): Output coordinate frame. Either
+                ``'cylindrical`` or ``'cartesian'``.
 
         Returns:
-            c1 (ndarryy): Either r (cylindrical) or x depending on the frame.
-            c2 (ndarray): Either theta or y depending on the frame.
-            c3 (ndarray): Height above the midplane, z.
+            ndarrays: Disk-frame coordinates. If ``frame='cartestian'`` this
+            will be three arrays for ``(x, y, z)``, otherwise it will be
+            cylindrical coordinates, ``(r, theta, z)``.
         """
 
         # Check the input variables.
@@ -241,9 +265,6 @@ class imagecube:
                 emission surface. Should be opposite sign to z0.
             phi (Optional[float]): Flaring angle correction term for the
                 emission surface.
-            tilt (Optional[float]): Value between -1 and 1, describing the
-                rotation of the disk. For negative values, the disk is rotating
-                clockwise on the sky.
             z_func (Optional[function]): A function which provides z(r). Note
                 that no checking will occur to make sure this is a valid
                 function.
