@@ -553,30 +553,6 @@ class imagecube:
         yidx = yidx if yidx.size > 1 else yidx[0]
         return xidx, yidx
 
-    def polar_projection(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=0.0,
-                         psi=0.0, z1=0.0, phi=1.0, tilt=0.0, method='linear',
-                         rgrid=None, tgrid=None):
-        """Deproject the data into polar coordinates."""
-        from scipy.interpolate import griddata
-        if self.data.ndim > 2:
-            raise ValueError("Must collapse the data.")
-        rvals, tvals = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA, z0=z0,
-                                        psi=psi, z1=z1, phi=phi, tilt=tilt)[:2]
-        rvals, tvals = rvals.flatten(), tvals.flatten()
-        dvals = self.data.flatten()
-
-        rgrid = rgrid if rgrid is not None else self.radial_sampling()[1]
-        tgrid = tgrid if tgrid is not None else np.linspace(-np.pi, np.pi, 180)
-
-        # Add extra arrays to reach the edges.
-        # TODO: only had on +\- 2 * diff(tgrid).
-        rvals = np.concatenate([rvals, rvals, rvals])
-        tvals = np.concatenate([tvals - 2. * np.pi, tvals, tvals + 2. * np.pi])
-        dvals = np.concatenate([dvals, dvals, dvals])
-
-        return griddata((rvals, tvals), dvals,
-                        (rgrid[None, :], tgrid[:, None]), method=method)
-
     def _estimate_PA(self, clip=95):
         """Estimate the PA in [deg] of the disk."""
         mask = self.data >= np.nanpercentile(self.data, [clip])
@@ -925,8 +901,7 @@ class imagecube:
                 major axis.
 
         Returns:
-            rbins (list): List of bin edges.
-            rpnts (list): List of bin centres.
+            list, list: List of bin edges and bin centers.
         """
         if rbins is not None and rvals is not None:
             raise ValueError("Specify only 'rbins' or 'rvals', not both.")
@@ -996,7 +971,7 @@ class imagecube:
 
     @property
     def beam(self):
-        """Returns the beam parameters in ["], ["], [deg]."""
+        """Returns the beam parameters in [arcsec], [arcsec], and [degrees]."""
         return self.bmaj, self.bmin, self.bpa
 
     def _beamkernel(self, bmaj=None, bmin=None, bpa=None, nbeams=1.0):
@@ -1025,8 +1000,26 @@ class imagecube:
 
     def convolve_cube(self, bmaj=None, bmin=None, bpa=None, nbeams=1.0,
                       fast=True, data=None):
-        """Convolve the cube with a 2D Gaussian beam."""
+        """
+        Convolve the cube with a 2D Gaussian beam.
+
+        Args:
+            bmaj (Optional[float]): FWHM of the Gaussian's major axis in
+                [arcsec]. Default is to use the beam major axis.
+            bmin (Optional[float]): FWHM of the Gaussian's minor axis in
+                [arcsec]. Default is to use the beam minor axis.
+            bpia (Optional[float]): Position angle of the Gaussian in
+                [degrees]. Default is to use the beam position angle.
+            nbeams (Optional[float]): Number of beams to convolve the image by.
+                This is simple a multiplicative factor for ``bmaj`` and
+                ``bmin`` if they are not provided.
+            fast (Optional[bool]): Whether to use the FFT method for the
+                convolution. Default is ``True``.
+            data (Optional[array]):
+        """
         data = self.data if data is None else data
+        if data.ndim == 2:
+            data = np.array([data])
         bmaj = self.bmaj if bmaj is None else bmaj
         bmin = self.bmin if bmin is None else bmin
         bpa = self.bpa if bpa is None else bpa
