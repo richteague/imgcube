@@ -54,12 +54,12 @@ class imagecube:
             self.verbose = True if verbose is None else verbose
 
         # Read in the data and header.
-        if type(fitsfile) is str:
+        if isinstance(fitsfile, str):
             self.path = os.path.expanduser(fitsfile)
             self.fname = self.path.split('/')[-1]
             self.data = np.squeeze(fits.getdata(self.path))
             self.header = fits.getheader(fitsfile)
-        elif type(fitsfile) is fits.hdu.hdulist.HDUList:
+        elif isinstance(fitsfile, fits.hdu.hdulist.HDUList):
             self.path = None
             self.fname = fitsfile.filename()
             self.data = fitsfile[0].data
