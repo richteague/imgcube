@@ -17,7 +17,7 @@ setup(
     url="https://github.com/richteague/imgcube",
     packages=["imgcube"],
     license="MIT",
-    install_requires=["scipy", "numpy", "matplotlib", "astropy"],
+    install_requires=["scipy", "numpy", "matplotlib", "astropy", "astro-eddy"],
     classifiers=[
         "Programming Language :: Python :: 3.6",
         "License :: OSI Approved :: MIT License",

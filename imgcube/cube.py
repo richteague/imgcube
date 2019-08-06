@@ -20,6 +20,8 @@ class imagecube:
         suppress_warnings (Optional[bool]): Suppress warnings from other
             Python pacakges (for example numpy). If this is selected then
             ``verbose`` will be set to ``False`` unless specified.
+        preserve_NaN (Optional[bool]): If ``False``, convert all ``NaN`` values
+            to ``0.0``.
         dx0 (Optional[float]): Recenter the image to this right ascencion
             offset [arcsec].
         dy0 (Optional[float]): Recenter the image to this declination
@@ -33,7 +35,7 @@ class imagecube:
     disk_coords_niter = 20
 
     def __init__(self, path, kelvin=False, clip=None, resample=1, verbose=None,
-                 suppress_warnings=True, dx0=0.0, dy0=0.0):
+                 suppress_warnings=True, preserve_NaN=True, dx0=0.0, dy0=0.0):
 
         # Suppres warnings.
 
@@ -49,7 +51,8 @@ class imagecube:
         self.path = os.path.expanduser(path)
         self.fname = self.path.split('/')[-1]
         self.data = np.squeeze(fits.getdata(self.path))
-        self.data = np.where(np.isfinite(self.data), self.data, 0.0)
+        if not preserve_NaN:
+            self.data = np.where(np.isfinite(self.data), self.data, 0.0)
         self.header = fits.getheader(path)
 
         # Generate the cube axes.
@@ -150,9 +153,9 @@ class imagecube:
             z_1 \times \left(\frac{r}{1^{\prime\prime}}\right)^{\varphi}
 
         Where both ``z0`` and ``z1`` are given in [arcsec]. For a razor thin
-        disk, ``z0=0.0``, while for a conical disk, as described in `Rosenfeld
-        et al. (2013)`_, ``psi=1.0``. We can also include a warp which is
-        parameterized by,
+        disk, ``z0=0.0``, while for a conical disk, as described in
+        `Rosenfeld et al. (2013)`_, ``psi=1.0``. We can also include a warp
+        which is parameterized by,
 
         .. math::
 
@@ -668,10 +671,10 @@ class imagecube:
         if to_shift.ndim == 2:
             to_shift = np.array([to_shift])
         shifted = np.array([shift(c, [y0, x0]) for c in to_shift])
-        if not save:
-            return shifted
         if data.ndim == 2:
             shifted = shifted[0]
+        if not save:
+            return shifted
         self.data = shifted
 
     def rotate_image(self, PA, data=None, save=True):
@@ -697,10 +700,10 @@ class imagecube:
         if to_rotate.ndim == 2:
             to_rotate = np.array([to_rotate])
         rotated = np.array([rotate(c, PA, reshape=False) for c in to_rotate])
-        if not save:
-            return rotated
         if data.ndim == 2:
             rotated = rotated[0]
+        if not save:
+            return rotated
         self.data = rotated
 
     def _get_flared_cart_coords_forward(self, x0, y0, inc, PA, func, extend=2,
@@ -1396,8 +1399,8 @@ class imagecube:
                    collapse='max', clip_values=None, griddata_kwargs=None,
                    ax=None, xaxis='radius', imshow_kwargs=None):
         """
-        Plots the polar deprojection (using self.deproject_data_polar()) of the
-        attached data. You can also specify your own data if you want to
+        Plots the polar deprojection (using :func:`deproject_data_polar`) of
+        the attached data. You can also specify your own data if you want to.
 
         Args:
             rgrid (Optional[array]): Radial
@@ -1411,7 +1414,7 @@ class imagecube:
                 To get the far side of the disk, make this number negative.
             psi (Optional[float]): Flaring angle for the emission surface.
             z1 (Optional[float]): Aspect ratio correction term at 1" for the
-                emission surface. Should be opposite sign to z0.
+                emission surface. Should be opposite sign to ``z0``.
             phi (Optional[float]): Flaring angle correction term for the
                 emission surface.
             w_i (Optional[float]): Warp inclination in [degrees] at the disk
@@ -1426,14 +1429,15 @@ class imagecube:
                 attached data. If providing data, it must already be collapsed
                 to a 2D array.
             collapse (Optional[str]): Method used to collapse 3D data. Must be
-                'max' to take the maximum value, 'sum' to sum along the
-                spectral axis or 'int' to integrate along the spectral axis.
+                ``'max'`` to take the maximum value, ``'sum'`` to sum along the
+                spectral axis or ``'int'`` to integrate along the spectral
+                axis.
             clip_values (Optional[float/iterable]): Clip the data values. If a
                 single value is given, clip all values below this, if two
                 values are given, clip values between them.
             ax (Optional[Matplolib axis]): Axes to plot the data on.
             xaxis (Optional[str]): Which value to have along the x-axis, either
-                'radius' or 'polar angle'.
+                ``'radius'`` or ``'polar angle'``.
             imshow_kwargs(Optional[dict]): Kwargs to be passed to imshow.
 
         Returns:
