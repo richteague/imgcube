@@ -175,7 +175,7 @@ class imagecube:
                 To get the far side of the disk, make this number negative.
             psi (Optional[float]): Flaring angle for the emission surface.
             z1 (Optional[float]): Aspect ratio correction term at 1" for the
-                emission surface. Should be opposite sign to z0.
+                emission surface. Should be opposite sign to ``z0``.
             phi (Optional[float]): Flaring angle correction term for the
                 emission surface.
             w_i (Optional[float]): Warp inclination in [degrees] at the disk
@@ -188,14 +188,6 @@ class imagecube:
                 in [arcsec] at a given radius in [arcsec].
             frame (Optional[str]): Frame of reference for the returned
                 coordinates. Either 'polar' or 'cartesian'.
-            z_func (Optional[function]): A function which provides z(r). Note
-                that no checking will occur to make sure this is a valid
-                function.
-            w_func (Optional[function]): A function which provides z_warp(r).
-                Note that no checking will occur to make sure this is a valid
-                function.
-            frame (Optional[str]): Output coordinate frame. Either
-                ``'cylindrical`` or ``'cartesian'``.
 
         Returns:
             ndarrays: Disk-frame coordinates. If ``frame='cartestian'`` this
@@ -224,6 +216,7 @@ class imagecube:
                 return r * np.tan(warp * np.sin(t - np.radians(w_t)))
 
         # Calculate the pixel values.
+
         r, t, z = self._get_flared_coords(x0, y0, inc, PA, z_func, w_func)
         if frame == 'cylindrical':
             return r, t, z
@@ -262,18 +255,23 @@ class imagecube:
                 To get the far side of the disk, make this number negative.
             psi (Optional[float]): Flaring angle for the emission surface.
             z1 (Optional[float]): Aspect ratio correction term at 1" for the
-                emission surface. Should be opposite sign to z0.
+                emission surface. Should be opposite sign to ``z0``.
             phi (Optional[float]): Flaring angle correction term for the
                 emission surface.
-            z_func (Optional[function]): A function which provides z(r). Note
-                that no checking will occur to make sure this is a valid
-                function.
+            w_i (Optional[float]): Warp inclination in [degrees] at the disk
+                center.
+            w_r (Optional[float]): Scale radius of the warp in [arcsec].
+            w_t (Optional[float]): Angle of nodes of the warp in [degrees].
+            z_func (Optional[callable]): User-defined function returning z in
+                [arcsec] at a given radius in [arcsec].
+            w_func (Optional[callable]): User-defined function returning z_warp
+                in [arcsec] at a given radius in [arcsec].
             beam_spacing (Optional[bool/float]): If True, randomly sample the
                 annulus such that each pixel is at least a beam FWHM apart. A
                 number can also be used in place of a boolean which will
                 describe the number of beam FWHMs to separate each sample by.
             annulus (Optional[bool]): If true, return an annulus instance
-                from `eddy`. Requires `eddy` to be installed.
+                from ``eddy``. Requires ``eddy`` to be installed.
 
         Returns:
             spectra (ndarray): The spectra from each pixel in the annulus.
@@ -386,7 +384,7 @@ class imagecube:
             options (Optional[dict]): Dictionary of options for ``get_vlos``.
 
         Returns:
-            TBD
+            array: Line of sight velocities.
         """
         annulus = self.get_annulus(r_min=r_min, r_max=r_max, PA_min=PA_min,
                                    PA_max=PA_max, exclude_PA=exclude_PA, x0=x0,
@@ -406,7 +404,7 @@ class imagecube:
 
         Args:
             coords (list): Midplane coordaintes to find in (x, y) in [arcsec,
-                arcsec] or (r, theta) in [arcsec, deg].
+                arcsec] or (r, theta) in [arcsec, degrees].
             frame_in (Optional[str]): Frame of input coordinates, either
                 'cartesian' or 'polar'.
             frame_out (Optional[str]): Frame of the output coordinates, either
@@ -810,13 +808,14 @@ class imagecube:
             statistic (Optional[str]): Statistic to use to determin the bin
                 value, either 'mean' or 'median'.
             uncertainty (Optional[str]): Measure of the bin uncertainty. Either
-                'std' for the standard deviation or 'percentiles' for the 16th
-                to 84th percentile range about the median.
+                ``'std'`` for the standard deviation or ``'percentiles'`` for
+                the 16th to 84th percentile range about the median. You can
+                also use ``'beam'`` to divide through by the square root of the
+                number of beams.
 
         Returns:
-            x (ndarray): Bin centers [arcsec].
-            y (ndarray): Bin statistics.
-            dy (ndarray): Bin uncertainties.
+            [3 x N] ndarray: Bin centers [arcsec], bin statistics and bin
+            uncertainties.
         """
 
         # Check variables are OK.
@@ -825,8 +824,9 @@ class imagecube:
         if statistic not in ['mean', 'median']:
             raise ValueError("Must choose statistic: mean or median.")
         uncertainty = uncertainty.lower()
-        if uncertainty not in ['stddev', 'percentiles']:
-            raise ValueError("Must choose uncertainty: stddev or percentiles.")
+        if uncertainty not in ['stddev', 'percentiles', 'beam']:
+            raise ValueError("Invalid uncertainty. Must be 'stddev', '
+                             + "'percentiles' or 'beam'.")
 
         # Define the points to sample the radial profile at.
 
@@ -864,13 +864,16 @@ class imagecube:
             y = np.array([np.nanmedian(dvals[ridxs == r])
                           for r in range(1, rbins.size)])
 
-        if uncertainty == 'stddev':
-            dy = np.array([np.nanstd(dvals[ridxs == r])
-                           for r in range(1, rbins.size)])
-        else:
+        if uncertainty == 'percentiles':
             dy = np.array([np.nanpercentile(dvals[ridxs == r], [16, 50, 84])
                            for r in range(1, rbins.size)])
             dy = np.array([dy[1] - dy[0], dy[2] - dy[1]])
+        else:
+            dy = np.array([np.nanstd(dvals[ridxs == r])
+                           for r in range(1, rbins.size)])
+            if uncertainty == 'beam':
+                dy /= 2. * np.pi * x / self.bmaj
+
         return x, y, dy
 
     def _collapse_cube(self, method='max', clip_values=None):

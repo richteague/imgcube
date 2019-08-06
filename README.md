@@ -1,5 +1,7 @@
 # imagecube
 
+[![Documentation Status](https://readthedocs.org/projects/imgcube/badge/?version=latest)](https://imgcube.readthedocs.io/en/latest/?badge=latest)
+
 A class with functions for analysing observations of protoplanetary disks (although in practice any disk would work). Everything is developed in a relatively ad-hoc manner and is therefore poorly tested or documented. Hopefully over time this will change.
 
 
