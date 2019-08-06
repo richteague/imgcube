@@ -150,8 +150,8 @@ class imagecube:
             z_1 \times \left(\frac{r}{1^{\prime\prime}}\right)^{\varphi}
 
         Where both ``z0`` and ``z1`` are given in [arcsec]. For a razor thin
-        disk, ``z0=0.0``, while for a conical disk, as described in Rosenfeld
-        et al. (2013), ``psi=1.0``. We can also include a warp which is
+        disk, ``z0=0.0``, while for a conical disk, as described in `Rosenfeld
+        et al. (2013)`_, ``psi=1.0``. We can also include a warp which is
         parameterized by,
 
         .. math::
@@ -792,21 +792,39 @@ class imagecube:
         return np.hypot(x_obs, y_obs), np.arctan2(y_obs, -x_obs), z_obs
 
     def clip_velocity(self, vmin=None, vmax=None):
-        """Clip the cube between (including) the defined velocity ranges."""
+        """
+        Clip the cube between the defined velocity ranges. Will update all
+        necessary values.
+
+        Args:
+            vmin (Optional[float]): Minimum velocity value to include in [m/s].
+            vmax (Optional[float]): Maximum velocity value to include in [m/s].
+        """
         if self.velax is None:
             raise AttributeError("Cannot clip a 2D cube.")
         vmin = vmin if vmin is not None else self.velax.min()
         vmax = vmax if vmax is not None else self.velax.max()
         mask = np.logical_and(self.velax >= vmin, self.velax <= vmax)
+        if mask.sum() == 0.0 and self.verbose:
+            print("WARNING: Masking all channels.")
         self.data = self.data[mask]
         self.velax = self.velax[mask]
         self.freqax = self.freqax[mask]
 
     def clip_frequency(self, fmin=None, fmax=None):
-        """Clip the cube between (including) the defined frequency ranges."""
+        """
+        Clip the cube between the defined frequency ranges. Will update all
+        necessary values.
+
+        Args:
+            fmin (Optional[float]): Minimum frequency to include in [Hz].
+            fmax (Optional[float]): Maximum frequency to include in [Hz].
+        """
         fmin = fmin if fmin is not None else self.freqax.min()
         fmax = fmax if fmax is not None else self.freqax.max()
         mask = np.logical_and(self.freqax >= fmin, self.freqax <= fmax)
+        if mask.sum() == 0.0 and self.verbose:
+            print("WARNING: Masking all channels.")
         self.data = self.data[mask]
         self.velax = self.velax[mask]
         self.freqax = self.freqax[mask]
