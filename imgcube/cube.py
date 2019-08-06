@@ -838,8 +838,8 @@ class imagecube:
 
         # Collapse and bin the data.
         if data is None:
-            dvals = self._collapse_cube(method=collapse,
-                                        clip_values=clip_values)
+            dvals = self.collapse_cube(method=collapse,
+                                       clip_values=clip_values)
         else:
             if data.ndim != 2:
                 raise ValueError("If providing own data, must be 2D!")
@@ -876,12 +876,33 @@ class imagecube:
             dy = np.array([np.nanstd(dvals[ridxs == r])
                            for r in range(1, rbins.size)])
             if uncertainty == 'beam':
-                dy /= 2. * np.pi * x / self.bmaj
+                dy /= (2. * np.pi * x / self.bmaj)**0.5
 
         return x, y, dy
 
-    def _collapse_cube(self, method='max', clip_values=None):
-        """Collapse the cube to a 2D image using the requested method."""
+    def collapse_cube(self, method='max', clip_values=None):
+        """
+        Collapse the 3D cube to a 2D image using the requested method. Three
+        methods are available: ``'max'`` takes the maximum value along the
+        spectral dimension, ``'sum'`` sums up the values along the spectral
+        dimension and ``'int'`` integrates along the spectral dimension.
+
+        If you want more flexibility in the way to collapse the cube, we
+        recommend `bettermoments`_.
+
+        .. _bettermoments: https://github.com/richteague/bettermoments
+
+        Args:
+            method (Optional[str]): Method used to collapse the cube, either
+                ``'max'``, ``'sum'`` or ``'int'``.
+            clip_values (Optional[tuple/float]): Value to clip the data with.
+                If just a single value is provided, clip all values below this,
+                if a ``tuple`` is provided, clip values between these two
+                values.
+
+        Returns:
+            array: Collapsed cube as a 2D array.
+        """
         if self.data.ndim > 2:
             to_avg = self._clipped_noise(clip_values=clip_values, fill=0.0)
             if method.lower() not in ['max', 'sum', 'int']:
@@ -1435,8 +1456,8 @@ class imagecube:
 
         # 1 - collapse the data.
         if data is None:
-            dvals = self._collapse_cube(method=collapse,
-                                        clip_values=clip_values).flatten()
+            dvals = self.collapse_cube(method=collapse,
+                                       clip_values=clip_values).flatten()
         else:
             if data.ndim != 2:
                 raise ValueError("If providing own data, must be 2D!")
