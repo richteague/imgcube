@@ -1,0 +1,4 @@
+__pycache__/
+imgcube.egg-info/
+docs/_build/
+*.DS_Store
