@@ -396,19 +396,28 @@ class imagecube:
 
     def sky_to_disk(self, coords, frame_in='polar', frame_out='polar', x0=0.0,
                     y0=0.0, inc=0.0, PA=0.0, z0=0.0, psi=1.0, z1=0.0, phi=0.0,
-                    tilt=0.0):
+                    w_i=0.0, w_r=1.0, w_t=0.0, z_func=None, w_func=None):
         """
-        For ther given sky coordinates, either (r, theta) or (x, y),
-        return the interpolated disk coordiantes in either (r, theta) or (x, y)
-        for plotting.
+        A convenience function for annotating plots. Convery sky-plane
+        coordinates, either in cartestian or polar coordinates, to disk-plane
+        coordinates based on the provided geometrical properties.
+
+        For more information on the geometrical parameters, see the
+        :func:`disk_coords` documentation.
+
+        .. note:
+
+            This function uses ``scipy.interpolate.griddata`` for the
+            transformation so may be slow with large images.
 
         Args:
-            coords (list): Midplane coordaintes to find in (x, y) in [arcsec,
-                arcsec] or (r, theta) in [arcsec, degrees].
+            coords (list): Midplane coordaintes to transform. If cartesian
+                coordaintes, units of [arcsec, arcsec], or [arcsec, degrees] if
+                in polar.
             frame_in (Optional[str]): Frame of input coordinates, either
-                'cartesian' or 'polar'.
+                ``'cartesian'`` or ``'polar'``.
             frame_out (Optional[str]): Frame of the output coordinates, either
-                'cartesian' or 'polar'.
+                ``'cartesian'`` or ``'polar'``.
             x0 (Optional[float]): Source right ascension offset [arcsec].
             y0 (Optional[float]): Source declination offset [arcsec].
             inc (Optional[float]): Source inclination [deg].
@@ -419,16 +428,21 @@ class imagecube:
                 To get the far side of the disk, make this number negative.
             psi (Optional[float]): Flaring angle for the emission surface.
             z1 (Optional[float]): Aspect ratio correction term at 1" for the
-                emission surface. Should be opposite sign to z0.
+                emission surface. Should be opposite sign to ``z0``.
             phi (Optional[float]): Flaring angle correction term for the
                 emission surface.
-            tilt (Optional[float]): Value between -1 and 1, describing the
-                rotation of the disk. For negative values, the disk is rotating
-                clockwise on the sky.
+            w_i (Optional[float]): Warp inclination in [degrees] at the disk
+                center.
+            w_r (Optional[float]): Scale radius of the warp in [arcsec].
+            w_t (Optional[float]): Angle of nodes of the warp in [degrees].
+            z_func (Optional[callable]): User-defined function returning z in
+                [arcsec] at a given radius in [arcsec].
+            w_func (Optional[callable]): User-defined function returning z_warp
+                in [arcsec] at a given radius in [arcsec].
 
         Returns:
-            x (float): The disk frame x-coordinate in [arcsec].
-            y (float): The disk frame y-coordinate in [arcsec].
+            array: The disk-frame coordinates in either ``(x, y)`` or
+            ``(r, t)`` depending on ``frame_out``.
         """
 
         # Import the necessary module.
@@ -462,8 +476,9 @@ class imagecube:
         # Convert to disk coordinates.
 
         xdisk, ydisk, _ = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA, z0=z0,
-                                           psi=psi, z1=z1, phi=phi, tilt=tilt,
-                                           frame='cartesian')
+                                           psi=psi, z1=z1, phi=phi, w_i=w_i,
+                                           w_r=w_r, w_t=w_t, z_func=z_func,
+                                           w_func=w_func, frame='cartesian')
         x_pix = (np.ones(xdisk.shape) * self.xaxis[None, ::-1]).flatten()[::5]
         y_pix = (np.ones(ydisk.shape) * self.yaxis[:, None]).flatten()[::5]
         x_int = griddata((x_pix, y_pix), xdisk.flatten()[::5], (xsky, ysky),
@@ -486,11 +501,11 @@ class imagecube:
         return interpolated sky coordiantes in (x, y) for plotting. The input
         needs to be a list like:
 
-            coords = ([r0, t0], [r1, t1], ..., [rN, tN])
+            ``coords = ([r0, t0], [r1, t1], ..., [rN, tN])``
 
         If you have an array of values, rvals and tvals then,
 
-            coords = np.vstack([rvals, tvals]).T
+            ``coords = np.vstack([rvals, tvals]).T``
 
         Args:
             coords (list): Midplane coordaintes to find in (x, y) in [arcsec,
@@ -507,9 +522,17 @@ class imagecube:
                 To get the far side of the disk, make this number negative.
             psi (Optional[float]): Flaring angle for the emission surface.
             z1 (Optional[float]): Aspect ratio correction term at 1" for the
-                emission surface. Should be opposite sign to z0.
+                emission surface. Should be opposite sign to ``z0``.
             phi (Optional[float]): Flaring angle correction term for the
                 emission surface.
+            w_i (Optional[float]): Warp inclination in [degrees] at the disk
+                center.
+            w_r (Optional[float]): Scale radius of the warp in [arcsec].
+            w_t (Optional[float]): Angle of nodes of the warp in [degrees].
+            z_func (Optional[callable]): User-defined function returning z in
+                [arcsec] at a given radius in [arcsec].
+            w_func (Optional[callable]): User-defined function returning z_warp
+                in [arcsec] at a given radius in [arcsec].
             return_idx (Optional[bool]): If True, return the indices of the
                 nearest pixels rather than the interpolated values.
 
@@ -543,11 +566,11 @@ class imagecube:
 
         # Grab disk coordinates and sky coordinates to interpolate between.
 
-        xdisk_grid, ydisk_grid = self.disk_coords(x0=x0, y0=y0,
-                                                  inc=inc, PA=PA,
-                                                  z0=z0, psi=psi,
-                                                  z1=z1, phi=phi,
-                                                  w_i=w_i, w_r=w_r, w_t=w_t,
+        xdisk_grid, ydisk_grid = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA,
+                                                  z0=z0, psi=psi, z1=z1,
+                                                  phi=phi, w_i=w_i, w_r=w_r,
+                                                  w_t=w_t, z_func=z_func,
+                                                  w_func=w_func,
                                                   frame='cartesian')[:2]
         xdisk_grid, ydisk_grid = xdisk_grid.flatten(), ydisk_grid.flatten()
         xsky_grid, ysky_grid = self._get_cart_sky_coords(x0=x0, y0=y0)[:2]
@@ -876,7 +899,10 @@ class imagecube:
             dy = np.array([np.nanstd(dvals[ridxs == r])
                            for r in range(1, rbins.size)])
             if uncertainty == 'beam':
-                dy /= (2. * np.pi * x / self.bmaj)**0.5
+                s = 10. * x**2 * np.cos(np.radians(inc))
+                s += 3. * x**2 * (1. + np.cos(np.radians(inc))**2)
+                s = 3. * x * (1. + np.cos(np.radians(inc))) - s**0.5
+                dy /= (np.pi * s / self.bmaj)**0.5
 
         return x, y, dy
 
