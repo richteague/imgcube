@@ -7,7 +7,16 @@ import scipy.constants as sc
 class imagecube:
     """
     Args:
-        path (str): Relative path to the FITS cube.
+        fitsfile (str/fitsfile object): Relative path to the FITS cube
+            or a file object as returned by `astropy.io.fits.open`. The latter
+            allows to first open the file, then add missing entries like
+            pixel size into the header and then pass it to `imagecube`::
+
+                with fits.open(fname) as hdulist:
+                    hdulist[0].header['cdelt1'] = -3.405e-06
+                    hdulist[0].header['cdelt2'] = 3.405e-06
+                    cube = imagecube(hdulist)
+
         kelvin (Optional[bool/str]): Convert the brightness units to [K].
             If ``True``, use the full Planck law, or if 'RJ' use the
             Rayleigh-Jeans approximation. This is not as accurate but does
@@ -32,7 +41,7 @@ class imagecube:
     fwhm = 2.35482004503
     disk_coords_niter = 20
 
-    def __init__(self, path, kelvin=False, clip=None, resample=1, verbose=None,
+    def __init__(self, fitsfile, kelvin=False, clip=None, resample=1, verbose=None,
                  suppress_warnings=True, dx0=0.0, dy0=0.0):
 
         # Suppres warnings.
@@ -45,12 +54,18 @@ class imagecube:
             self.verbose = True if verbose is None else verbose
 
         # Read in the data and header.
+        if type(fitsfile) is str:
+            self.path = os.path.expanduser(fitsfile)
+            self.fname = self.path.split('/')[-1]
+            self.data = np.squeeze(fits.getdata(self.path))
+            self.header = fits.getheader(fitsfile)
+        elif type(fitsfile) is fits.hdu.hdulist.HDUList:
+            self.path = None
+            self.fname = fitsfile.filename()
+            self.data = fitsfile[0].data
+            self.header = fitsfile[0].header
 
-        self.path = os.path.expanduser(path)
-        self.fname = self.path.split('/')[-1]
-        self.data = np.squeeze(fits.getdata(self.path))
         self.data = np.where(np.isfinite(self.data), self.data, 0.0)
-        self.header = fits.getheader(path)
 
         # Generate the cube axes.
 
