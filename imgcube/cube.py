@@ -829,8 +829,8 @@ class imagecube:
             raise ValueError("Must choose statistic: mean or median.")
         uncertainty = uncertainty.lower()
         if uncertainty not in ['stddev', 'percentiles', 'beam']:
-            raise ValueError("Invalid uncertainty. Must be 'stddev', '
-                             + "'percentiles' or 'beam'.")
+            raise ValueError("Invalid uncertainty. Must be 'stddev',"
+                             + " 'percentiles' or 'beam'.")
 
         # Define the points to sample the radial profile at.
 
