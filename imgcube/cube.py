@@ -769,8 +769,12 @@ class imagecube:
                        clip_values=None, statistic='mean',
                        uncertainty='stddev', **kwargs):
         """
-        Returns a radial profile of the data. If the data is 3D, then it is
-        collapsed along the spectral axis with some provided function.
+        Returns a radial profile of the data, taking into account the geometry
+        of the disk, including any non-zero emission heights with a description
+        of the parameters found in :func:`disk_coords`. If the data is 3D, then
+        it is collapsed along the spectral axis with some provided function.
+        More information on the collapsing can be found in
+        :func:`collapse_cube`.
 
         Args:
             rpnts (ndarray): Bin centers in [arcsec].
