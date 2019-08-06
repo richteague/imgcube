@@ -495,7 +495,8 @@ class imagecube:
 
     def disk_to_sky(self, coords, frame_in='cylindrical', x0=0.0, y0=0.0,
                     inc=0.0, PA=0.0, z0=0.0, psi=1.0, z1=0.0, phi=0.0, w_i=0.0,
-                    w_r=1.0, w_t=0.0, return_idx=False):
+                    w_r=1.0, w_t=0.0, z_func=None, w_func=None,
+                    return_idx=False):
         """
         For a given disk midplane coordinate, either (r, theta) or (x, y),
         return interpolated sky coordiantes in (x, y) for plotting. The input
@@ -503,7 +504,7 @@ class imagecube:
 
             ``coords = ([r0, t0], [r1, t1], ..., [rN, tN])``
 
-        If you have an array of values, rvals and tvals then,
+        If you have an array of values, ``rvals`` and ``tvals`` then,
 
             ``coords = np.vstack([rvals, tvals]).T``
 
@@ -645,7 +646,21 @@ class imagecube:
         return r_tmp, t_tmp, z_func(r_tmp)
 
     def shift_center(self, dx0=0.0, dy0=0.0, data=None, save=True):
-        """Shift the source center by (dx0 [arcsec], dy0 [arcsec])."""
+        """
+        Shift the source center by ``dx0`` [arcsec] and ``dy0`` [arcsec] in the
+        x- and y-directions, respectively.
+
+        Args:
+            dx0 (Optional[float]): Shfit along the x-axis in [arcsec].
+            dy0 (Optional[float]): Shifta long the y-axis in [arcsec].
+            data (Optional[ndarray]): Data to shift if not the attached data.
+            save (Optional[bool]): Whether to overwrite the attached data with
+                the shifted data. If not, return the shifted array. Default is
+                ``True``.
+
+        Returns:
+            ndarray: Shifted array if ``save=False``.
+        """
         from scipy.ndimage import shift
         y0, x0 = -dy0 / self.dpix, dx0 / self.dpix
         data = data if data is not None else self.data
@@ -660,7 +675,21 @@ class imagecube:
         self.data = shifted
 
     def rotate_image(self, PA, data=None, save=True):
-        """Rotat the image PA [degrees] anticlockwise about the center."""
+        """
+        Rotate the image such that the red-shifted axis aligns with the x-axis.
+        This is particularly useful for the :func:`emission_height`.
+
+        Args:
+            PA (float): Position angle of the disk, measured to the red-shifted
+                major axis of the disk, anti-clockwise from North, in [deg].
+            data (Optional[ndarray]): Data to rotate if not the attached data.
+            save (Optional[bool]): Whether to overwrite the attached data with
+                the rotated data. If not, return the rotated array. Default is
+                ``True``.
+
+        Returns:
+            ndarray: Rotated array if ``save=False``.
+        """
         from scipy.ndimage import rotate
         PA -= 90.0
         data = data if data is not None else self.data
