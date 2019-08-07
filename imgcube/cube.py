@@ -1542,8 +1542,8 @@ class imagecube:
             return np.squeeze(data)
         self.data = np.squeeze(data)
 
-    def cross_section(self, mstar=1.0, dist=100., grid=True, downsample=1,
-                      griddata_kwargs=None):
+    def cross_section(self, x0=0.0, y0=0.0, PA=0.0, mstar=1.0, dist=100.,
+                      grid=True, downsample=1, griddata_kwargs=None):
         """
         Return the cross section of the data following `Dutrey et al. (2017)`_.
         This yields ``I_nu(r, z)``. If ``grid=True`` then this will be gridded
@@ -1553,12 +1553,15 @@ class imagecube:
         .. warning::
 
             This assumes that the disk is directly edge on (inc = 90 degrees)
-            and that the rotation is cylindrica, that is, it doesn't change
+            and that the rotation is cylindrical, that is, it doesn't change
             with height. These changes are coming.
 
         .. _Dutrey et al. (2017): https://ui.adsabs.harvard.edu/abs/2017A%26A...607A.130D
 
         Args:
+            x0 (Optional[float]): Source right ascension offset [arcsec].
+            y0 (Optional[float]): Source declination offset [arcsec].
+            PA (Optional[float]): Position angle of the disk in [deg].
             mstar (Optional[float]): Mass of the central star in [Msun].
             dist (Optional[float]): Distance to the source in [pc].
             grid (Optional[bool]): Whether to grid the coordinates to a regular
@@ -1571,14 +1574,18 @@ class imagecube:
 
         Returns:
             ndarry: Either three 1D arrays containing ``(r, z, I_nu)``, or, if
-                ``grid=True``, two 1D arrays with the ``r`` and ``z`` axes and
-                one 2D array of ``I_nu``.                
+            ``grid=True``, two 1D arrays with the ``r`` and ``z`` axes and
+            one 2D array of ``I_nu``.
         """
         # Pixel coordinates.
         v = np.ones(self.data.shape) * self.velax[:, None, None]
         x = np.ones(self.data.shape) * self.xaxis[None, None, :] * dist * sc.au
         z = np.ones(self.data.shape) * self.yaxis[None, :, None] * dist * sc.au
-        I = self.data.copy()
+        if (x0 == 0.0) & (y0 == 0.0):
+            I = self.data.copy()
+        else:
+            I = self.shift_center(dx0=x0, dy0=y0, save=False)
+        I = I if PA == 0.0 else self.rotate_image(PA, data=I, save=False)
 
         # Transformation assuming cylindrical rotation.
         y = sc.G * self.msun * mstar * (x / v)**2
@@ -1603,8 +1610,85 @@ class imagecube:
         r_grid = self.xaxis.copy()[self.xaxis >= 0.0]
         r_grid = r_grid[np.argsort(r_grid)]
         z_grid = self.yaxis.copy()
-        I_grid = griddata((r, z), I, (r_grid[None, :], z_grid[:, None]), **griddata_kwargs)
+        I_grid = griddata((r, z), I, (r_grid[None, :], z_grid[:, None]),
+                          **griddata_kwargs)
         return r_grid, z_grid, I_grid
+
+    def get_cut(self, z=0.0, x0=0.0, y0=0.0, PA=0.0, mstar=1.0, dist=100.0,
+                grid=True, downsample=1, griddata_kwargs=None):
+        """
+        Return a deprojected cut of the data following `Matra et al. (2017)`_,
+        which will be ``(I_nu(x, |y|))``. If ``grid=True`` then this will be
+        gridded using ``scipy.interpolate.griddata`` onto axes with the same
+        pixel spacing as the attached data.
+
+        .. warning::
+
+            This assumes that the disk is directly edge on (inc = 90 degrees)
+            and that the rotation is cylindrical, that is, it doesn't change
+            with height. These changes are coming.
+
+        .. _Matra et al. (2017): https://ui.adsabs.harvard.edu/abs/2017MNRAS.464.1415M
+
+        Args:
+            z (Optional[float]): Height at which to take the slice in [arcsec].
+            x0 (Optional[float]): Source right ascension offset [arcsec].
+            y0 (Optional[float]): Source declination offset [arcsec].
+            PA (Optional[float]): Position angle of the disk in [deg].
+            mstar (Optional[float]): Mass of the central star in [Msun].
+            dist (Optional[float]): Distance to the source in [pc].
+            grid (Optional[bool]): Whether to grid the coordinates to a regular
+                grid. Default is ``True``.
+            downsample (Optional[int]): If provided, downsample the coordinates
+                to grid by this factor to speed up the interpolation for large
+                datasets. Default is ``1``.
+            griddata_kwargs (Optional[dic]): Dictionary of kwargs to pass to
+                ``scipy.interpolate.griddata``.
+
+        Returns:
+            ndarry: Either three 1D arrays containing ``(x, y, I_nu)``, or, if
+            ``grid=True``, two 1D arrays with the ``x`` and ``|y|`` axes and
+            one 2D array of ``I_nu``.
+        """
+        # Pixel coordinates.
+        v = np.ones(self.data.shape) * self.velax[:, None, None]
+        x = np.ones(self.data.shape) * self.xaxis[None, None, :] * dist * sc.au
+        y = sc.G * self.msun * mstar * (x / v)**2
+        y = np.sqrt(np.power(y, 2./3.) - x**2)
+
+        # Rotate the data to correct position.
+        if (x0 == 0.0) & (y0 == 0.0):
+            I = self.data.copy()
+        else:
+            I = self.shift_center(dx0=x0, dy0=y0, save=False)
+        I = I if PA == 0.0 else self.rotate_image(PA, data=I, save=False)
+
+        # Take the right slice.
+        idx = abs(self.yaxis - z).argmin()
+        x = x[:, idx] / sc.au / dist
+        y = y[:, idx] / sc.au / dist
+        I = I[:, idx]
+        if not grid:
+            return x, y, I
+
+        # Remove NaNs.
+        x, y, I = x.flatten(), y.flatten(), I.flatten()
+        mask = np.isfinite(I) & np.isfinite(y)
+        x, y, I = x[mask], y[mask], I[mask]
+
+        # Grid the data.
+        from scipy.interpolate import griddata
+        griddata_kwargs = {} if griddata_kwargs is None else griddata_kwargs
+        if downsample > 1:
+            downsample = int(downsample)
+            x, y, I = x[::downsample], y[::downsample], I[::downsample]
+        x_grid = self.xaxis.copy()
+        x_grid = x_grid[np.argsort(x_grid)]
+        y_grid = self.yaxis.copy()[self.yaxis >= 0.0]
+        y_grid = y_grid[np.argsort(y_grid)]
+        I_grid = griddata((x, y), I, (x_grid[None, :], y_grid[:, None]),
+                          **griddata_kwargs)
+        return x_grid, y_grid, I_grid
 
     def deproject_data_polar(self, rgrid=None, tgrid=None, x0=0.0, y0=0.0,
                              inc=0.0, PA=0.0, z0=0.0, psi=0.0, z1=0.0, phi=1.0,
