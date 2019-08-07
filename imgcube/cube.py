@@ -10,7 +10,7 @@ class imagecube:
         fitsfile (str/fitsfile object): Relative path to the FITS cube
             or a file object as returned by `astropy.io.fits.open`. The latter
             allows to first open the file, then add missing entries like
-            pixel size into the header and then pass it to `imagecube`::
+            pixel size into the header and then pass it to ``imagecube``::
 
                 with fits.open(fname) as hdulist:
                     hdulist[0].header['cdelt1'] = -3.405e-06
@@ -31,9 +31,9 @@ class imagecube:
             ``verbose`` will be set to ``False`` unless specified.
         preserve_NaN (Optional[bool]): If ``False``, convert all ``NaN`` values
             to ``0.0``.
-        dx0 (Optional[float]): Recenter the image to this right ascencion
+        x0 (Optional[float]): Recenter the image to this right ascencion
             offset [arcsec].
-        dy0 (Optional[float]): Recenter the image to this declination
+        y0 (Optional[float]): Recenter the image to this declination
             offset [arcsec].
     """
 
@@ -43,8 +43,9 @@ class imagecube:
     fwhm = 2.35482004503
     disk_coords_niter = 20
 
-    def __init__(self, fitsfile, kelvin=False, clip=None, resample=1, verbose=None,
-                 suppress_warnings=True, dx0=0.0, dy0=0.0):
+    def __init__(self, fitsfile, kelvin=False, clip=None, resample=1,
+                 verbose=None, preserve_NaN=False, suppress_warnings=True,
+                 x0=0.0, y0=0.0):
 
         # Suppres warnings.
 
@@ -81,8 +82,8 @@ class imagecube:
 
         # Recenter the image if requested.
 
-        if (dx0 != 0.0) or (dy0 != 0.0):
-            self.shift_center(dx0=dx0, dy0=dy0, save=True)
+        if (x0 != 0.0) or (y0 != 0.0):
+            self.shift_center(dx0=x0, dy0=y0, save=True)
 
         # Spectral axis. Make sure velocity is increasing.
 
@@ -182,6 +183,8 @@ class imagecube:
         ``w_t`` in [radians] is the angle of nodes (where the warp is zero),
         relative to the position angle of the disk, measured east of north.
 
+        .. _Rosenfeld et al. (2013): https://ui.adsabs.harvard.edu/abs/2013ApJ...774...16R/abstract
+
         Args:
             x0 (Optional[float]): Source right ascension offset [arcsec].
             y0 (Optional[float]): Source declination offset [arcsec].
@@ -200,12 +203,12 @@ class imagecube:
                 center.
             w_r (Optional[float]): Scale radius of the warp in [arcsec].
             w_t (Optional[float]): Angle of nodes of the warp in [degrees].
-            z_func (Optional[callable]): User-defined function returning z in
+            z_func (Optional[callable]): User-defined function returning `z` in
                 [arcsec] at a given radius in [arcsec].
-            w_func (Optional[callable]): User-defined function returning z_warp
-                in [arcsec] at a given radius in [arcsec].
+            w_func (Optional[callable]): User-defined function returning
+                `z_warp` in [arcsec] at a given radius in [arcsec].
             frame (Optional[str]): Frame of reference for the returned
-                coordinates. Either 'polar' or 'cartesian'.
+                coordinates. Either ``'polar'`` or ``'cartesian'``.
 
         Returns:
             ndarrays: Disk-frame coordinates. If ``frame='cartestian'`` this
@@ -280,10 +283,10 @@ class imagecube:
                 center.
             w_r (Optional[float]): Scale radius of the warp in [arcsec].
             w_t (Optional[float]): Angle of nodes of the warp in [degrees].
-            z_func (Optional[callable]): User-defined function returning z in
+            z_func (Optional[callable]): User-defined function returning `z` in
                 [arcsec] at a given radius in [arcsec].
-            w_func (Optional[callable]): User-defined function returning z_warp
-                in [arcsec] at a given radius in [arcsec].
+            w_func (Optional[callable]): User-defined function returning
+                `z_warp` in [arcsec] at a given radius in [arcsec].
             beam_spacing (Optional[bool/float]): If True, randomly sample the
                 annulus such that each pixel is at least a beam FWHM apart. A
                 number can also be used in place of a boolean which will
@@ -1497,6 +1500,111 @@ class imagecube:
         ax.set_xlabel(xlabel)
         ax.set_ylabel(ylabel)
         return ax
+
+    def subtract_continuum(self, continuum=None, channels=None, N=5, data=None,
+                           save=True):
+        """
+        Simple continuum subtracted. Model the continuum as the average of
+        either the first and last ``N`` channels, or, if ``channels`` is
+        provided, those channels. Then subtract this from each channel.
+
+        Args:
+            continuum (Optional[ndarray]): Model of the continuum to subtract.
+            channels (Optional[array]): A mask of same size as ``velax``
+                defining which channels contain only continuum.
+            N (Optional[int]): Number of first and final channels to model the
+                continuum with if ``continuum`` and ``channels`` not provided.
+            data (Optional[ndarray]): Data to subtract continuum from if not
+                the attached data.
+            save (Optional[bool]): If ``True``, save the continuum subtracted
+                data as ``self.data``, otherwise return it.
+
+        Returns:
+            ndarray: Continuum subtracted datacube.
+        """
+        data = data if data is not None else self.data
+        if data.ndim == 2:
+            data = np.array([data])
+        if continuum is None:
+            if channels is not None:
+                continuum = np.nanmean(data[channels], axis=0)
+            else:
+                continuum = np.concatenate([data[:N], data[-N:]])
+                continuum = np.nanmean(continuum, axis=0)
+        if continuum.shape != data.shape and continuum.shape != data.shape[1:]:
+            raise ValueError("continuum model not same shape as `data` or "
+                             + "a channel.")
+        if continuum.shape == data.shape:
+            data -= continuum
+        else:
+            data = [c - continuum for c in data]
+        if not save:
+            return np.squeeze(data)
+        self.data = np.squeeze(data)
+
+    def cross_section(self, mstar=1.0, dist=100., grid=True, downsample=1,
+                      griddata_kwargs=None):
+        """
+        Return the cross section of the data following `Dutrey et al. (2017)`_.
+        This yields ``I_nu(r, z)``. If ``grid=True`` then this will be gridded
+        using ``scipy.interpolate.griddata`` onto axes with the same pixel
+        spacing as the attached data.
+
+        .. warning::
+
+            This assumes that the disk is directly edge on (inc = 90 degrees)
+            and that the rotation is cylindrica, that is, it doesn't change
+            with height. These changes are coming.
+
+        .. _Dutrey et al. (2017): https://ui.adsabs.harvard.edu/abs/2017A%26A...607A.130D
+
+        Args:
+            mstar (Optional[float]): Mass of the central star in [Msun].
+            dist (Optional[float]): Distance to the source in [pc].
+            grid (Optional[bool]): Whether to grid the coordinates to a regular
+                grid. Default is ``True``.
+            downsample (Optional[int]): If provided, downsample the coordinates
+                to grid by this factor to speed up the interpolation for large
+                datasets. Default is ``1``.
+            griddata_kwargs (Optional[dic]): Dictionary of kwargs to pass to
+                ``scipy.interpolate.griddata``.
+
+        Returns:
+            ndarry: Either three 1D arrays containing ``(r, z, I_nu)``, or, if
+                ``grid=True``, two 1D arrays with the ``r`` and ``z`` axes and
+                one 2D array of ``I_nu``.                
+        """
+        # Pixel coordinates.
+        v = np.ones(self.data.shape) * self.velax[:, None, None]
+        x = np.ones(self.data.shape) * self.xaxis[None, None, :] * dist * sc.au
+        z = np.ones(self.data.shape) * self.yaxis[None, :, None] * dist * sc.au
+        I = self.data.copy()
+
+        # Transformation assuming cylindrical rotation.
+        y = sc.G * self.msun * mstar * (x / v)**2
+        y = np.sqrt(np.power(y, 2./3.) - x**2)
+        r = np.hypot(x, y)
+        if not grid:
+            return r / sc.au / dist, z / sc.au / dist, I
+
+        # Flatten the data and remove NaNs.
+        r, z, I = r.flatten(), z.flatten(), I.flatten()
+        mask = np.isfinite(I) & np.isfinite(r)
+        r = r[mask] / sc.au / dist
+        z = z[mask] / sc.au / dist
+        I = I[mask]
+
+        # Grid the data.
+        from scipy.interpolate import griddata
+        griddata_kwargs = {} if griddata_kwargs is None else griddata_kwargs
+        if downsample > 1:
+            downsample = int(downsample)
+            r, z, I = r[::downsample], z[::downsample], I[::downsample]
+        r_grid = self.xaxis.copy()[self.xaxis >= 0.0]
+        r_grid = r_grid[np.argsort(r_grid)]
+        z_grid = self.yaxis.copy()
+        I_grid = griddata((r, z), I, (r_grid[None, :], z_grid[:, None]), **griddata_kwargs)
+        return r_grid, z_grid, I_grid
 
     def deproject_data_polar(self, rgrid=None, tgrid=None, x0=0.0, y0=0.0,
                              inc=0.0, PA=0.0, z0=0.0, psi=0.0, z1=0.0, phi=1.0,
