@@ -366,7 +366,7 @@ class imagecube:
 
     def get_vlos(self, r_min, r_max, PA_min=None, PA_max=None,
                  exclude_PA=False, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=0.0,
-                 psi=1.0, z1=0.0, phi=1.0, tilt=0.0, beam_spacing=True,
+                 psi=1.0, z1=0.0, phi=1.0, beam_spacing=True,
                  options=None):
         """
         Wrapper for the ``get_vlos`` function in ``eddy.fit_annulus``.
@@ -395,9 +395,6 @@ class imagecube:
                 emission surface. Should be opposite sign to z0.
             phi (Optional[float]): Flaring angle correction term for the
                 emission surface.
-            tilt (Optional[float]): Value between -1 and 1, describing the
-                rotation of the disk. For negative values, the disk is rotating
-                clockwise on the sky.
             beam_spacing (Optional[bool/float]): If True, randomly sample the
                 annulus such that each pixel is at least a beam FWHM apart. A
                 number can also be used in place of a boolean which will
@@ -410,8 +407,8 @@ class imagecube:
         annulus = self.get_annulus(r_min=r_min, r_max=r_max, PA_min=PA_min,
                                    PA_max=PA_max, exclude_PA=exclude_PA, x0=x0,
                                    y0=y0, inc=inc, PA=PA, z0=z0, psi=psi,
-                                   z1=z1, phi=phi, tilt=tilt,
-                                   beam_spacing=beam_spacing, as_ensemble=True)
+                                   z1=z1, phi=phi, beam_spacing=beam_spacing,
+                                   as_ensemble=True)
         options = {} if options is None else options
         return annulus.get_vlos(**options)
 
@@ -1318,7 +1315,7 @@ class imagecube:
                 ax.scatter(xx, yy, s=ms, marker=m, color=lc, zorder=zo, lw=lw)
 
     def plot_surface(self, ax=None, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=0.0,
-                     psi=0.0, z1=0.0, phi=1.0, tilt=0.0, r_min=0.0, r_max=None,
+                     psi=0.0, z1=0.0, phi=1.0, r_min=0.0, r_max=None,
                      ntheta=9, nrad=10, check_mask=True, **kwargs):
         """
         Overplot the emission surface onto an axis.
@@ -1338,9 +1335,6 @@ class imagecube:
                 emission surface. Should be opposite sign to z0.
             phi (Optional[float]): Flaring angle correction term for the
                 emission surface.
-            tilt (Optional[float]): Value between -1 and 1, describing the
-                rotation of the disk. For negative values, the disk is rotating
-                clockwise on the sky.
             r_min (Optional[float]): Inner radius to plot, default is 0.
             r_max (Optional[float]): Outer radius to plot.
             ntheta (Optional[int]): Number of theta contours to plot.
@@ -1359,13 +1353,13 @@ class imagecube:
 
         # Front half of the disk.
         rf, tf, zf = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA, z0=z0,
-                                      psi=psi, z1=z1, phi=phi, tilt=tilt)
+                                      psi=psi, z1=z1, phi=phi)
         rf = np.where(zf >= 0.0, rf, np.nan)
         tf = np.where(zf >= 0.0, tf, np.nan)
 
         # Rear half of the disk.
         rb, tb, zb = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA, z0=-z0,
-                                      psi=psi, z1=-z1, phi=phi, tilt=tilt)
+                                      psi=psi, z1=-z1, phi=phi)
         rb = np.where(zb <= 0.0, rb, np.nan)
         tb = np.where(zb <= 0.0, tb, np.nan)
 
@@ -1573,11 +1567,12 @@ class imagecube:
                 ``scipy.interpolate.griddata``.
 
         Returns:
-            ndarry: Either three 1D arrays containing ``(r, z, I_nu)``, or, if
+            ndarray: Either three 1D arrays containing ``(r, z, I_nu)``, or, if
             ``grid=True``, two 1D arrays with the ``r`` and ``z`` axes and
             one 2D array of ``I_nu``.
         """
         # Pixel coordinates.
+
         v = np.ones(self.data.shape) * self.velax[:, None, None]
         x = np.ones(self.data.shape) * self.xaxis[None, None, :] * dist * sc.au
         z = np.ones(self.data.shape) * self.yaxis[None, :, None] * dist * sc.au
@@ -1588,6 +1583,7 @@ class imagecube:
         I = I if PA == 0.0 else self.rotate_image(PA, data=I, save=False)
 
         # Transformation assuming cylindrical rotation.
+
         y = sc.G * self.msun * mstar * (x / v)**2
         y = np.sqrt(np.power(y, 2./3.) - x**2)
         r = np.hypot(x, y)
@@ -1595,6 +1591,7 @@ class imagecube:
             return r / sc.au / dist, z / sc.au / dist, I
 
         # Flatten the data and remove NaNs.
+
         r, z, I = r.flatten(), z.flatten(), I.flatten()
         mask = np.isfinite(I) & np.isfinite(r)
         r = r[mask] / sc.au / dist
@@ -1602,6 +1599,7 @@ class imagecube:
         I = I[mask]
 
         # Grid the data.
+
         from scipy.interpolate import griddata
         griddata_kwargs = {} if griddata_kwargs is None else griddata_kwargs
         if downsample > 1:
@@ -1618,7 +1616,7 @@ class imagecube:
                 grid=True, downsample=1, griddata_kwargs=None):
         """
         Return a deprojected cut of the data following `Matra et al. (2017)`_,
-        which will be ``(I_nu(x, |y|))``. If ``grid=True`` then this will be
+        which will be ``I_nu(x, |y|)``. If ``grid=True`` then this will be
         gridded using ``scipy.interpolate.griddata`` onto axes with the same
         pixel spacing as the attached data.
 
@@ -1646,17 +1644,19 @@ class imagecube:
                 ``scipy.interpolate.griddata``.
 
         Returns:
-            ndarry: Either three 1D arrays containing ``(x, y, I_nu)``, or, if
+            ndarray: Either three 1D arrays containing ``(x, y, I_nu)``, or, if
             ``grid=True``, two 1D arrays with the ``x`` and ``|y|`` axes and
             one 2D array of ``I_nu``.
         """
         # Pixel coordinates.
+
         v = np.ones(self.data.shape) * self.velax[:, None, None]
         x = np.ones(self.data.shape) * self.xaxis[None, None, :] * dist * sc.au
         y = sc.G * self.msun * mstar * (x / v)**2
         y = np.sqrt(np.power(y, 2./3.) - x**2)
 
         # Rotate the data to correct position.
+
         if (x0 == 0.0) & (y0 == 0.0):
             I = self.data.copy()
         else:
@@ -1664,6 +1664,7 @@ class imagecube:
         I = I if PA == 0.0 else self.rotate_image(PA, data=I, save=False)
 
         # Take the right slice.
+
         idx = abs(self.yaxis - z).argmin()
         x = x[:, idx] / sc.au / dist
         y = y[:, idx] / sc.au / dist
@@ -1672,11 +1673,13 @@ class imagecube:
             return x, y, I
 
         # Remove NaNs.
+
         x, y, I = x.flatten(), y.flatten(), I.flatten()
         mask = np.isfinite(I) & np.isfinite(y)
         x, y, I = x[mask], y[mask], I[mask]
 
         # Grid the data.
+
         from scipy.interpolate import griddata
         griddata_kwargs = {} if griddata_kwargs is None else griddata_kwargs
         if downsample > 1:
@@ -1900,7 +1903,7 @@ class imagecube:
     def get_deprojected_spectrum(self, r_min, r_max, PA_min=None, PA_max=None,
                                  exclude_PA=False, x0=0.0, y0=0.0, inc=0.0,
                                  PA=0.0, z0=0.0, psi=1.0, z1=0.0, phi=1.0,
-                                 tilt=0.0, beam_spacing=False, mstar=1.0,
+                                 beam_spacing=False, mstar=1.0,
                                  dist=100., vrot=None, vrad=0., resample=True):
         """
         Return the azimuthally averaged spectrum from an annulus described by
@@ -1920,7 +1923,7 @@ class imagecube:
         annulus = self.get_annulus(r_min=r_min, r_max=r_max, PA_min=PA_min,
                                    PA_max=PA_max, exclude_PA=exclude_PA, x0=x0,
                                    y0=y0, inc=inc, PA=PA, z0=z0, psi=psi,
-                                   z1=z1, phi=phi, tilt=tilt, z_func=None,
+                                   z1=z1, phi=phi, z_func=None,
                                    as_ensemble=True, beam_spacing=beam_spacing)
         if vrot is None:
             vrot = self.keplerian_curve(rpnts=np.average([r_min, r_max]),
@@ -1932,7 +1935,7 @@ class imagecube:
     # == Rotation Functions == #
 
     def keplerian_profile(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=0.0,
-                          psi=1.0, z1=0.0, phi=1.0, tilt=0.0, mstar=1.0,
+                          psi=1.0, z1=0.0, phi=1.0, mstar=1.0,
                           dist=100., vlsr=0.0):
         """Return a Keplerian rotation profile (for the near side) in [m/s]."""
         rvals, tvals, zvals = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA,
@@ -2003,9 +2006,6 @@ class imagecube:
                 emission surface. Should be opposite sign to z0.
             phi (Optional[float]): Flaring angle correction term for the
                 emission surface.
-            tilt (Optional[float]): Value between -1 and 1, describing the
-                rotation of the disk. For negative values, the disk is rotating
-                clockwise on the sky.
             mstar (Optional[float]): Mass of the central starr in [Msun].
             dist (Optional[float]): Distance to the source in [pc].
             r_min (Optional[float]): Inner radius of the disk in [arcsec].
@@ -2069,7 +2069,7 @@ class imagecube:
                         clobber=True, output_verify='fix')
 
     def _dV_profile(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=0.0, psi=1.0,
-                    z1=0.0, phi=1.0, tilt=0.0, dV=450., dVq=0.0):
+                    z1=0.0, phi=1.0, dV=450., dVq=0.0):
         """Returns a deprojected linewidth profile for a given geometry."""
         if dVq == 0.0:
             return dV * np.ones((self.nypix, self.nxpix))
@@ -2306,9 +2306,6 @@ class imagecube:
                 emission surface. Should be opposite sign to z0.
             phi (Optional[float]): Flaring angle correction term for the
                 emission surface.
-            tilt (Optional[float]): Value between -1 and 1, describing the
-                rotation of the disk. For negative values, the disk is rotating
-                clockwise on the sky.
             z_func (Optional[callable]): A function which returns the emission
                 height in [arcsec] for a midplane radius in [arcsec]. If
                 provided, will be used in place of the parametric emission
