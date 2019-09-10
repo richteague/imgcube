@@ -2541,6 +2541,38 @@ class imagecube:
         return rvals * np.cos(phi), rvals * np.sin(phi)
 
 
+    def plot_axes(self, ax, x0=0.0, y0=0.0, inc=0.0, PA=0.0, major=1.0,
+                   plot_kwargs=None):
+        """
+        Plot the major and minor axes on the provided axis.
+
+        Args:
+            ax (Matplotlib axes): Axes instance to plot onto.
+            x0 (Optional[float]): Relative x-location of the center [arcsec].
+            y0 (Optional[float]): Relative y-location of the center [arcsec].
+            inc (Optional[float]): Inclination of the disk in [degrees].
+            PA (Optional[float]): Position angle of the disk in [degrees].
+            major (Optional[float]): Size of the major axis line in [arcsec].
+            plot_kwargs (Optional[dict]): Dictionary of parameters to pass to
+                ``matplotlib.plot``.
+
+        Returns:
+            matplotlib axis: Matplotlib ax with axes drawn.
+        """
+        x = np.array([major, -major, 0.0, 0.0])
+        y = np.array([0.0, 0.0, major * np.cos(np.radians(inc)),
+                      -major * np.cos(np.radians(inc))])
+        x, y = self._rotate_coords(x, y, PA=PA)
+        x, y = x + x0, y + y0
+        plot_kwargs = {} if plot_kwargs is None else plot_kwargs
+        c = plot_kwargs.pop('c', plot_kwargs.pop('color', 'k'))
+        ls = plot_kwargs.pop('ls', plot_kwargs.pop('linestyle', ':'))
+        lw = plot_kwargs.pop('lw', plot_kwargs.pop('linewidth', 1.0))
+        ax.plot(x[:2], y[:2], c=c, ls=ls, lw=lw)
+        ax.plot(x[2:], y[2:], c=c, ls=ls, lw=lw)
+        return ax
+
+
 def detect_peaks(x, mph=None, mpd=1, threshold=0, edge='rising',
                  kpsh=False, valley=False, show=False, ax=None):
 
