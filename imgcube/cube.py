@@ -2270,10 +2270,12 @@ class imagecube:
 
             # Save the file.
             if type(save) is not str:
-                fname = '.{:.2f}arcsec'.format(np.mean([bmaj, bmin]))
+                fname = '.{:.3f}arcsec'.format(np.mean([bmaj, bmin]))
+                fname += '.{:.0f}ms'.format(chan)
                 if rms is not None:
-                    fname += '.{:.2f}rms'.format(rms)
+                    fname += '.{:.3f}rms'.format(rms)
                 fname = self.path.replace('.fits', fname + '.fits')
+                
             else:
                 fname = save
             hdu.writeto(fname.replace('.fits', '') + '.fits',
