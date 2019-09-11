@@ -2113,7 +2113,8 @@ class imagecube:
                       save=False):
         """
         Generate synthetic observations by convolving the data spatially and
-        spectrally and adding correlated noise.
+        spectrally and adding correlated noise. Will automatically convert
+        the attached brightness unit to 'Jy/beam'.
 
         Args:
             bmaj (float): Beam major axis in [arcsec].
@@ -2138,6 +2139,10 @@ class imagecube:
 
         # Check the input values.
         bmin = bmaj if bmin is None else bmin
+        if bmin > bmaj:
+            temp = bmin
+            bmin = bmaj
+            bmaj = temp
         assert bmaj >= bmin, "bmaj >= bmin"
         bpa = np.radians(bpa % 360.0)
 
@@ -2194,11 +2199,16 @@ class imagecube:
 
         else:
             velax = self.velax
+            chan = self.chan
 
         # Spatially convolve the data.
         from astropy.convolution import convolve, Gaussian2DKernel
         beam = Gaussian2DKernel(bmin/dpix/self.fwhm, bmaj/dpix/self.fwhm, bpa)
         data = np.array([convolve(c, beam, boundary='extend') for c in data])
+
+        # If necessary, convert from Jy/pixel to Jy/beam.
+        if self.header['bunit'].lower() == 'jy/pixel':
+            data *= np.pi * bmin * bmaj / 4. / np.log(2.) / self.dpix**2
 
         # Include a spectral response.
         if spectral_response is not None:
@@ -2252,7 +2262,7 @@ class imagecube:
             hdu.header['CUNIT3'] = 'm/s'
 
             # Other.
-            hdu.header['BUNIT'] = self.header['BUNIT']
+            hdu.header['BUNIT'] = 'JY/BEAM'
             hdu.header['RESTFREQ'] = self.header['RESTFREQ']
             hdu.header['BMAJ'] = bmaj / 3600.
             hdu.header['BMIN'] = bmin / 3600.
