@@ -1143,6 +1143,11 @@ class imagecube:
         """
         Convolve the cube with a 2D Gaussian beam.
 
+        .. warning:
+
+            This function does not alter the attached units. If the units
+            are of Jy/pixel, you must convert them to Jy/beam by hand.
+
         Args:
             bmaj (Optional[float]): FWHM of the Gaussian's major axis in
                 [arcsec]. Default is to use the beam major axis.
@@ -1156,6 +1161,10 @@ class imagecube:
             fast (Optional[bool]): Whether to use the FFT method for the
                 convolution. Default is ``True``.
             data (Optional[array]):
+
+        Returns:
+            ndarray: An array, the same shape as ``self.data``, which has been
+                convolved with the provided beam.
         """
         data = self.data if data is None else data
         if data.ndim == 2:
@@ -1612,8 +1621,8 @@ class imagecube:
                           **griddata_kwargs)
         return r_grid, z_grid, I_grid
 
-    def get_cut(self, z=0.0, x0=0.0, y0=0.0, PA=0.0, mstar=1.0, dist=100.0,
-                grid=True, downsample=1, griddata_kwargs=None):
+    def get_cut(self, z=0.0, dz=None, x0=0.0, y0=0.0, PA=0.0, mstar=1.0,
+                dist=100.0, grid=True, downsample=1, griddata_kwargs=None):
         """
         Return a deprojected cut of the data following `Matra et al. (2017)`_,
         which will be ``I_nu(x, |y|)``. If ``grid=True`` then this will be
@@ -1630,6 +1639,7 @@ class imagecube:
 
         Args:
             z (Optional[float]): Height at which to take the slice in [arcsec].
+            dz (Optional[int]: Width of the slice to take in [arcsec]. 
             x0 (Optional[float]): Source right ascension offset [arcsec].
             y0 (Optional[float]): Source declination offset [arcsec].
             PA (Optional[float]): Position angle of the disk in [deg].
@@ -1648,6 +1658,7 @@ class imagecube:
             ``grid=True``, two 1D arrays with the ``x`` and ``|y|`` axes and
             one 2D array of ``I_nu``.
         """
+
         # Pixel coordinates.
 
         v = np.ones(self.data.shape) * self.velax[:, None, None]
@@ -1663,12 +1674,17 @@ class imagecube:
             I = self.shift_center(dx0=x0, dy0=y0, save=False)
         I = I if PA == 0.0 else self.rotate_image(PA, data=I, save=False)
 
+        # Select an appropriate width.
+
+        dz = int(dz / self.dpix) if dz is not None else 0
+        idx_a = abs(self.yaxis - z).argmin() - int(dz / 2) 
+        idx_b = idx_a + dz + 1
+
         # Take the right slice.
 
-        idx = abs(self.yaxis - z).argmin()
-        x = x[:, idx] / sc.au / dist
-        y = y[:, idx] / sc.au / dist
-        I = I[:, idx]
+        x = x[:, idx_a:idx_b] / sc.au / dist
+        y = y[:, idx_a:idx_b] / sc.au / dist
+        I = I[:, idx_a:idx_b]
         if not grid:
             return x, y, I
 
