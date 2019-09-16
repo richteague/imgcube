@@ -31,6 +31,10 @@ class imagecube:
             ``verbose`` will be set to ``False`` unless specified.
         preserve_NaN (Optional[bool]): If ``False``, convert all ``NaN`` values
             to ``0.0``.
+        force_center (Optional[bool]: If ``True``, will check to see if the
+            coordinate axes are symmetric, i.e. that
+            ``self.xaxis[0] == -self.xaxis[-1]``. If this check fails, the
+            axes will be shifted to center the image.
         x0 (Optional[float]): Recenter the image to this right ascencion
             offset [arcsec].
         y0 (Optional[float]): Recenter the image to this declination
@@ -45,7 +49,7 @@ class imagecube:
 
     def __init__(self, fitsfile, kelvin=False, clip=None, resample=1,
                  verbose=None, preserve_NaN=False, suppress_warnings=True,
-                 x0=0.0, y0=0.0):
+                 force_center=False, x0=0.0, y0=0.0):
 
         # Suppres warnings.
 
@@ -79,6 +83,31 @@ class imagecube:
         self.nypix = self.yaxis.size
         self.dpix = np.mean([abs(np.diff(self.xaxis)),
                              abs(np.diff(self.yaxis))])
+
+        # If we want to clip the cube, check that the image is
+        # roughly in the center. TODO: Find a better heuristic
+        # for this. Maybe beamsize?
+
+        if force_center is False and clip is not None:
+            if abs(abs(self.xaxis[-1]) - abs(self.xaxis[0])) > 3 * self.dpix:
+                force_center = True
+            if abs(abs(self.yaxis[-1]) - abs(self.yaxis[0])) > 3 * self.dpix:
+                force_center = True
+
+        # Alter the axes to make sure they're symmetric about the center.
+        # TODO: Check with CASA for consistency.
+
+        if force_center:
+            self.xaxis -= 0.5 * (abs(self.xaxis[-1]) - abs(self.xaxis[0]))
+            self.xaxis -= self.dpix
+            self.yaxis -= 0.5 * (abs(self.yaxis[-1]) - abs(self.yaxis[0]))
+            self.yaxis -= self.dpix
+
+        # Make sure that x-axis is _decreasing_.
+
+        if self.xaxis[0] < self.xaxis[-1]:
+            self.xaxis = self.xaxis[::-1]
+            self.data = self.data[:, :, ::-1]
 
         # Recenter the image if requested.
 
@@ -1546,7 +1575,8 @@ class imagecube:
         self.data = np.squeeze(data)
 
     def cross_section(self, x0=0.0, y0=0.0, PA=0.0, mstar=1.0, dist=100.,
-                      grid=True, downsample=1, griddata_kwargs=None):
+                      grid=True, downsample=1, griddata_kwargs=None,
+                      cylindrical_rotation=False):
         """
         Return the cross section of the data following `Dutrey et al. (2017)`_.
         This yields ``I_nu(r, z)``. If ``grid=True`` then this will be gridded
@@ -1574,6 +1604,8 @@ class imagecube:
                 datasets. Default is ``1``.
             griddata_kwargs (Optional[dic]): Dictionary of kwargs to pass to
                 ``scipy.interpolate.griddata``.
+            cylindrical_rotation (Optional[bool]): If ``True``, assume that the
+                Keplerian rotation decreases with height above the midplane.
 
         Returns:
             ndarray: Either three 1D arrays containing ``(r, z, I_nu)``, or, if
@@ -1593,8 +1625,10 @@ class imagecube:
 
         # Transformation assuming cylindrical rotation.
 
-        y = sc.G * self.msun * mstar * (x / v)**2
-        y = np.sqrt(np.power(y, 2./3.) - x**2)
+        y = np.power(sc.G * self.msun * mstar * (x / v)**2, 1./3.)
+        if not cylindrical_rotation:
+            y -= (z * dist * sc.au)**2
+        y = np.sqrt(y)
         r = np.hypot(x, y)
         if not grid:
             return r / sc.au / dist, z / sc.au / dist, I
@@ -1622,7 +1656,8 @@ class imagecube:
         return r_grid, z_grid, I_grid
 
     def get_cut(self, z=0.0, dz=None, x0=0.0, y0=0.0, PA=0.0, mstar=1.0,
-                dist=100.0, grid=True, downsample=1, griddata_kwargs=None):
+                dist=100.0, grid=True, downsample=1, griddata_kwargs=None,
+                cylindrical_rotation=False):
         """
         Return a deprojected cut of the data following `Matra et al. (2017)`_,
         which will be ``I_nu(x, |y|)``. If ``grid=True`` then this will be
@@ -1652,6 +1687,9 @@ class imagecube:
                 datasets. Default is ``1``.
             griddata_kwargs (Optional[dic]): Dictionary of kwargs to pass to
                 ``scipy.interpolate.griddata``.
+            cylindrical_rotation (Optional[bool]): If ``True``, assume
+                cylindrical rotation rather than a Keplerian rotation profile
+                which decreases with height in the disk.
 
         Returns:
             ndarray: Either three 1D arrays containing ``(x, y, I_nu)``, or, if
@@ -1663,8 +1701,10 @@ class imagecube:
 
         v = np.ones(self.data.shape) * self.velax[:, None, None]
         x = np.ones(self.data.shape) * self.xaxis[None, None, :] * dist * sc.au
-        y = sc.G * self.msun * mstar * (x / v)**2
-        y = np.sqrt(np.power(y, 2./3.) - x**2)
+        y = np.power(sc.G * self.msun * mstar * (x / v)**2, 2./3.)
+        if not cylindrical_rotation:
+            y -= (z * dist * sc.au)**2
+        y = np.sqrt(y - x**2)
 
         # Rotate the data to correct position.
 
