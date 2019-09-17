@@ -35,6 +35,9 @@ class imagecube:
             coordinate axes are symmetric, i.e. that
             ``self.xaxis[0] == -self.xaxis[-1]``. If this check fails, the
             axes will be shifted to center the image.
+        center_velocity (Optional[float]: If specified, shift the velocity axis
+            such that this value is at the center of the velocity axis. Note
+            that this does not mean it lies in a channel center.
         x0 (Optional[float]): Recenter the image to this right ascencion
             offset [arcsec].
         y0 (Optional[float]): Recenter the image to this declination
@@ -49,7 +52,7 @@ class imagecube:
 
     def __init__(self, fitsfile, kelvin=False, clip=None, resample=1,
                  verbose=None, preserve_NaN=False, suppress_warnings=True,
-                 force_center=False, x0=0.0, y0=0.0):
+                 force_center=False, center_velocity=None, x0=0.0, y0=0.0):
 
         # Suppres warnings.
 
@@ -131,6 +134,15 @@ class imagecube:
             self.chan = None
             self.freqax = None
 
+        # Shift the velocity axis.
+
+        if center_velocity is not None:
+            if isinstance(center_velocity, bool):
+                center_velocity = 0.0
+            self.velax -= self.velax[0]
+            self.velax -= 0.5 * self.velax[-1]
+            self.velax += center_velocity
+
         # Get the beam properties of the beam. If a CASA beam table is found,
         # take the median values. If neither is specified, assume that the
         # pixel size is the beam size.
@@ -181,6 +193,8 @@ class imagecube:
                 raise ValueError("Mistmatch in data and velax shapes.")
 
         return
+
+    
 
     # == Coordinate Deprojection == #
 
@@ -1575,19 +1589,14 @@ class imagecube:
         self.data = np.squeeze(data)
 
     def cross_section(self, x0=0.0, y0=0.0, PA=0.0, mstar=1.0, dist=100.,
-                      grid=True, downsample=1, griddata_kwargs=None,
-                      cylindrical_rotation=False):
+                      grid=True, grid_spacing=None, downsample=1,
+                      griddata_kwargs=None, cylindrical_rotation=False,
+                      remove_noise=True):
         """
         Return the cross section of the data following `Dutrey et al. (2017)`_.
         This yields ``I_nu(r, z)``. If ``grid=True`` then this will be gridded
         using ``scipy.interpolate.griddata`` onto axes with the same pixel
         spacing as the attached data.
-
-        .. warning::
-
-            This assumes that the disk is directly edge on (inc = 90 degrees)
-            and that the rotation is cylindrical, that is, it doesn't change
-            with height. These changes are coming.
 
         .. _Dutrey et al. (2017): https://ui.adsabs.harvard.edu/abs/2017A%26A...607A.130D
 
@@ -1599,6 +1608,8 @@ class imagecube:
             dist (Optional[float]): Distance to the source in [pc].
             grid (Optional[bool]): Whether to grid the coordinates to a regular
                 grid. Default is ``True``.
+            grid_spacing (Optional[float]): The spacing, in [arcsec], for the R
+                and Z grids. If ``None`` is provided, will use pixel spacing.
             downsample (Optional[int]): If provided, downsample the coordinates
                 to grid by this factor to speed up the interpolation for large
                 datasets. Default is ``1``.
@@ -1606,6 +1617,11 @@ class imagecube:
                 ``scipy.interpolate.griddata``.
             cylindrical_rotation (Optional[bool]): If ``True``, assume that the
                 Keplerian rotation decreases with height above the midplane.
+            remove_noise (Optional[bool]): If ``True``, remove all pixels which
+                fall below 3 times the standard deviation of the two edge
+                channels. If the argument is a ``float``, use this as the sigma
+                clip level.
+
 
         Returns:
             ndarray: Either three 1D arrays containing ``(r, z, I_nu)``, or, if
@@ -1614,9 +1630,14 @@ class imagecube:
         """
         # Pixel coordinates.
 
-        v = np.ones(self.data.shape) * self.velax[:, None, None]
-        x = np.ones(self.data.shape) * self.xaxis[None, None, :] * dist * sc.au
-        z = np.ones(self.data.shape) * self.yaxis[None, :, None] * dist * sc.au
+        v_sky = np.ones(self.data.shape) * self.velax[:, None, None]
+        x_sky = np.ones(self.data.shape) * self.xaxis[None, None, :]
+        y_sky = np.ones(self.data.shape) * self.yaxis[None, :, None]
+        x_sky *= dist * sc.au
+        y_sky *= dist * sc.au
+
+        # Shift the emission distribution.
+
         if (x0 == 0.0) & (y0 == 0.0):
             I = self.data.copy()
         else:
@@ -1625,39 +1646,54 @@ class imagecube:
 
         # Transformation assuming cylindrical rotation.
 
-        y = np.power(sc.G * self.msun * mstar * (x / v)**2, 1./3.)
+        R = np.power(sc.G * self.msun * mstar * (x_sky / v_sky)**2, 2./3.)
         if not cylindrical_rotation:
-            y -= (z * dist * sc.au)**2
-        y = np.sqrt(y)
-        r = np.hypot(x, y)
+            R -= y_sky**2
+        R = np.sqrt(R) / sc.au / dist
+        Z = y_sky / sc.au / dist
         if not grid:
-            return r / sc.au / dist, z / sc.au / dist, I
+            return R, Z, I
 
         # Flatten the data and remove NaNs.
 
-        r, z, I = r.flatten(), z.flatten(), I.flatten()
-        mask = np.isfinite(I) & np.isfinite(r)
-        r = r[mask] / sc.au / dist
-        z = z[mask] / sc.au / dist
-        I = I[mask]
+        R, Z, I = R.flatten(), Z.flatten(), I.flatten()
+        mask = np.isfinite(I) & np.isfinite(R)
+        R, Z, I = R[mask], Z[mask], I[mask]
+
+        # Remove noise.
+        if remove_noise:
+            if isinstance(remove_noise, bool):
+                remove_noise = 3.0
+            rms = np.nanstd([self.data[0], self.data[-1]])
+            mask = I >= remove_noise * rms
+            R, Z, I = R[mask], Z[mask], I[mask]
 
         # Grid the data.
 
         from scipy.interpolate import griddata
         griddata_kwargs = {} if griddata_kwargs is None else griddata_kwargs
+        method = griddata_kwargs.pop('method', 'nearest')
         if downsample > 1:
             downsample = int(downsample)
-            r, z, I = r[::downsample], z[::downsample], I[::downsample]
-        r_grid = self.xaxis.copy()[self.xaxis >= 0.0]
-        r_grid = r_grid[np.argsort(r_grid)]
-        z_grid = self.yaxis.copy()
-        I_grid = griddata((r, z), I, (r_grid[None, :], z_grid[:, None]),
-                          **griddata_kwargs)
-        return r_grid, z_grid, I_grid
+            R, Z, I = R[::downsample], Z[::downsample], I[::downsample]
+
+        # Define the grids.
+
+        R_grid = self.xaxis.copy()[self.xaxis >= 0.0]
+        R_grid = R_grid[np.argsort(R_grid)]
+        if grid_spacing is not None:
+            R_grid = np.arange(0.0, R_grid[-1], grid_spacing)
+        Z_grid = self.yaxis.copy()
+        if grid_spacing is not None:
+            Z_grid = np.arange(Z_grid[0], Z_grid[-1], grid_spacing)
+
+        I_grid = griddata((R, Z), I, (R_grid[None, :], Z_grid[:, None]),
+                          method=method, **griddata_kwargs)
+        return R_grid, Z_grid, I_grid
 
     def get_cut(self, z=0.0, dz=None, x0=0.0, y0=0.0, PA=0.0, mstar=1.0,
                 dist=100.0, grid=True, downsample=1, griddata_kwargs=None,
-                cylindrical_rotation=False):
+                cylindrical_rotation=False, remove_noise=True):
         """
         Return a deprojected cut of the data following `Matra et al. (2017)`_,
         which will be ``I_nu(x, |y|)``. If ``grid=True`` then this will be
@@ -1690,6 +1726,10 @@ class imagecube:
             cylindrical_rotation (Optional[bool]): If ``True``, assume
                 cylindrical rotation rather than a Keplerian rotation profile
                 which decreases with height in the disk.
+            remove_noise (Optional[bool]): If ``True``, remove all pixels which
+                fall below 3 times the standard deviation of the two edge
+                channels. If the argument is a ``float``, use this as the sigma
+                clip level.
 
         Returns:
             ndarray: Either three 1D arrays containing ``(x, y, I_nu)``, or, if
@@ -1733,6 +1773,14 @@ class imagecube:
         x, y, I = x.flatten(), y.flatten(), I.flatten()
         mask = np.isfinite(I) & np.isfinite(y)
         x, y, I = x[mask], y[mask], I[mask]
+
+        # Remove noise.
+        if remove_noise:
+            if isinstance(remove_noise, bool):
+                remove_noise = 3.0
+            rms = np.nanstd([self.data[0], self.data[-1]])
+            mask = I >= remove_noise * rms
+            x, y, I = x[mask], y[mask], I[mask]
 
         # Grid the data.
 
@@ -2191,6 +2239,10 @@ class imagecube:
             save (optional[bool/str]): If True, save the data as a new cube.
                 You may also provide a path to save to (noting that this will
                 overwrite anything).
+
+        Returns:
+            ndarrays: If not saved to disk, returns the spatial axis, velocity
+                axis and the datacube.
         """
 
         # Check the input values.
@@ -2317,9 +2369,12 @@ class imagecube:
             hdu.header['CRVAL3'] = velax[0]
             hdu.header['CUNIT3'] = 'm/s'
 
-            # Other.
+            # Other. Defaults to CO (3-2) if no frequency given.
             hdu.header['BUNIT'] = 'JY/BEAM'
-            hdu.header['RESTFREQ'] = self.header['RESTFREQ']
+            try:
+                hdu.header['RESTFREQ'] = self.header['RESTFREQ']
+            except:
+                hdu.header['RESTFREQ'] = 345.7959899e9
             hdu.header['BMAJ'] = bmaj / 3600.
             hdu.header['BMIN'] = bmin / 3600.
             hdu.header['BPA'] = np.degrees(bpa)
@@ -2331,7 +2386,7 @@ class imagecube:
                 if rms is not None:
                     fname += '.{:.3f}rms'.format(rms)
                 fname = self.path.replace('.fits', fname + '.fits')
-                
+
             else:
                 fname = save
             hdu.writeto(fname.replace('.fits', '') + '.fits',
