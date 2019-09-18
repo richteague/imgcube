@@ -18,7 +18,7 @@ class imagecube:
                     cube = imagecube(hdulist)
 
         kelvin (Optional[bool/str]): Convert the brightness units to [K].
-            If ``True``, use the full Planck law, or if 'RJ' use the
+            If ``True``, use the full Planck law, or if ``'RJ'`` use the
             Rayleigh-Jeans approximation. This is not as accurate but does
             not suffer as much in the low intensity regime.
         clip (Optional[float]): Clip the image cube down to a field of view
@@ -1576,8 +1576,8 @@ class imagecube:
 
     def cross_section(self, x0=0.0, y0=0.0, PA=0.0, mstar=1.0, dist=100.,
                       grid=True, grid_spacing=None, downsample=1,
-                      griddata_kwargs=None, cylindrical_rotation=False,
-                      remove_noise=True):
+                      cylindrical_rotation=False, clip_noise=True, min_npnts=5,
+                      mask_velocities=None):
         """
         Return the cross section of the data following `Dutrey et al. (2017)`_.
         This yields ``I_nu(r, z)``. If ``grid=True`` then this will be gridded
@@ -1599,20 +1599,22 @@ class imagecube:
             downsample (Optional[int]): If provided, downsample the coordinates
                 to grid by this factor to speed up the interpolation for large
                 datasets. Default is ``1``.
-            griddata_kwargs (Optional[dic]): Dictionary of kwargs to pass to
-                ``scipy.interpolate.griddata``.
             cylindrical_rotation (Optional[bool]): If ``True``, assume that the
                 Keplerian rotation decreases with height above the midplane.
-            remove_noise (Optional[bool]): If ``True``, remove all pixels which
+            clip_noise (Optional[bool]): If ``True``, remove all pixels which
                 fall below 3 times the standard deviation of the two edge
-                channels. If the argument is a ``float``, use this as the sigma
-                clip level.
-
+                channels. If the argument is a ``float``, use this as the clip
+                level.
+            min_npnts (Optional[int]): Number of minimum points in each bin for
+                the average. Default is 5.
+            mask_velocities (Optional[list of tuples]): List of
+                ``(v_min, v_max)`` tuples to mask (i.e. remove from the
+                averaging).
 
         Returns:
-            ndarray: Either three 1D arrays containing ``(r, z, I_nu)``, or, if
+            ndarray: Either two 1D arrays containing ``(r, z, I_nu)``, or, if
             ``grid=True``, two 1D arrays with the ``r`` and ``z`` axes and
-            one 2D array of ``I_nu``.
+            two 2D array of ``I_nu`` and ``dI_nu``.
         """
         # Pixel coordinates.
 
@@ -1630,6 +1632,15 @@ class imagecube:
             I = self.shift_center(dx0=x0, dy0=y0, save=False)
         I = I if PA == 0.0 else self.rotate_image(PA, data=I, save=False)
 
+        # Remove the maked velocities pixels.
+
+        if mask_velocities:
+            mask = [np.logical_and(self.velax <= v_min, self.velax >= v_max)
+                    for v_min, v_max in np.atleast_2d(mask_velocities)]
+            mask = ~np.any(mask, axis=0)
+            mask = mask[:, None, None] * np.ones(v_sky.shape).astype(bool)
+            x_sky, y_sky, v_sky = x_sky[mask], y_sky[mask], v_sky[mask]
+
         # Transformation assuming cylindrical rotation.
 
         R = np.power(sc.G * self.msun * mstar * (x_sky / v_sky)**2, 2./3.)
@@ -1637,6 +1648,9 @@ class imagecube:
             R -= y_sky**2
         R = np.sqrt(R) / sc.au / dist
         Z = y_sky / sc.au / dist
+
+        # Return the raw pixel values if necessary.
+
         if not grid:
             return R, Z, I
 
@@ -1647,18 +1661,15 @@ class imagecube:
         R, Z, I = R[mask], Z[mask], I[mask]
 
         # Remove noise.
-        if remove_noise:
-            if isinstance(remove_noise, bool):
-                remove_noise = 3.0
-            rms = np.nanstd([self.data[0], self.data[-1]])
-            mask = I >= remove_noise * rms
+        if clip_noise:
+            if isinstance(clip_noise, bool):
+                clip_noise = 3.0 * np.nanstd([self.data[0], self.data[-1]])
+            mask = I >= clip_noise
             R, Z, I = R[mask], Z[mask], I[mask]
 
-        # Grid the data.
+        # Downsample the data to speed the averaging.
+        # TODO: Check if this is actually necessary.
 
-        from scipy.interpolate import griddata
-        griddata_kwargs = {} if griddata_kwargs is None else griddata_kwargs
-        method = griddata_kwargs.pop('method', 'nearest')
         if downsample > 1:
             downsample = int(downsample)
             R, Z, I = R[::downsample], Z[::downsample], I[::downsample]
@@ -1669,17 +1680,28 @@ class imagecube:
         R_grid = R_grid[np.argsort(R_grid)]
         if grid_spacing is not None:
             R_grid = np.arange(0.0, R_grid[-1], grid_spacing)
+        R_bins = self.radial_sampling(rvals=R_grid)[0]
         Z_grid = self.yaxis.copy()
         if grid_spacing is not None:
             Z_grid = np.arange(Z_grid[0], Z_grid[-1], grid_spacing)
+        Z_bins = self.radial_sampling(rvals=Z_grid)[0]
 
-        I_grid = griddata((R, Z), I, (R_grid[None, :], Z_grid[:, None]),
-                          method=method, **griddata_kwargs)
-        return R_grid, Z_grid, I_grid
+        # Grid the data.
+
+        from scipy.stats import binned_statistic_2d
+        I_grid = binned_statistic_2d(R, Z, I, bins=[R_bins, Z_bins],
+                                     statistic='mean')[0]
+        dI_grid = binned_statistic_2d(R, Z, I, bins=[R_bins, Z_bins],
+                                      statistic='std')[0]
+        N_pnts = binned_statistic_2d(R, Z, I, bins=[R_bins, Z_bins],
+                                     statistic='count')[0]
+        I_grid = np.where(N_pnts >= min_npnts, I_grid, np.nan)
+        dI_grid = np.where(N_pnts >= min_npnts, dI_grid / N_pnts**0.5, np.nan)
+        return R_grid, Z_grid, I_grid.T, dI_grid.T
 
     def get_cut(self, z=0.0, dz=None, x0=0.0, y0=0.0, PA=0.0, mstar=1.0,
                 dist=100.0, grid=True, downsample=1, griddata_kwargs=None,
-                cylindrical_rotation=False, remove_noise=True):
+                cylindrical_rotation=False, remove_noise=True, min_npnts=5):
         """
         Return a deprojected cut of the data following `Matra et al. (2017)`_,
         which will be ``I_nu(x, |y|)``. If ``grid=True`` then this will be
