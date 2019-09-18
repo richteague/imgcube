@@ -31,14 +31,14 @@ class imagecube:
             ``verbose`` will be set to ``False`` unless specified.
         preserve_NaN (Optional[bool]): If ``False``, convert all ``NaN`` values
             to ``0.0``.
-        center_axes (Optional[None/bool/float]: If ``None`` or ``False``, no
+        center_axes (Optional[None/bool/float]): If ``None`` or ``False``, no
             change to the axes. If ``True``, will shift the axes such that 0 is
             in the center, otherwise a ``float`` will specify the central offset
             value. This can be either a tuple, representing the x- and y-axis
             individually. If just a single value, will apply to both axes.
-        center_velocity (Optional[bool/float/None]): If ``None`` or ``False``,
-            no change is made. If ``True``, will center the velocity to 0 [m/s],
-            otherwise a ``float`` will be the central velocity in [m/s].
+        center_velocity (Optional[float/None]): If ``None``, no change is made.
+            If ``True``, will center the velocity to 0 [m/s], otherwise a
+            ``float`` will be the central velocity in [m/s].
         dx0 (Optional[float]): Recenter the image to this right ascencion
             offset [arcsec]. This uses 2D interpolation to shift the image
             relative to the axes.
@@ -93,17 +93,16 @@ class imagecube:
 
         # Center the spatial axes.
 
-        if clip is not None and not center_axes:
-            center_axes = True
+        if clip is not None and center_axes is None:
+            center_axes = 0.0
 
-        if center_axes:
+        self._check_xaxis_direction()
+        if center_axes is not None:
             center_axes = np.squeeze(center_axes)
             if center_axes.size == 1:
                 self._center_spatial_axes(x0=center_axes, y0=center_axes)
             else:
                 self._center_spatial_axes(x0=center_axes[0], y0=center_axes[1])
-
-        self._check_xaxis_direction()
 
         # Recenter the image if requested.
 
@@ -2512,22 +2511,20 @@ class imagecube:
         defined axes (e.g. those from some radiative transfer codes).
 
         Args:
-            x0 (Optional[bool/float/None]): If ``None`` or ``False``, no change
-                to the x-axis. If ``True``, will shift the x-axis such that 0
-                is in the center, otherwise a ``float`` will specify the central
-                offset value.
-            y0 (Optional[bool/float/None]): If ``None`` or ``False``, no change
-                to the y-axis. If ``True``, will shift the y-axis such that 0
-                is in the center, otherwise a ``float`` will specify the central
-                offset value.
+            x0 (Optional[float/None]): If ``None``, no change to the x-axis. If
+                ``True``, will shift the x-axis such that 0 is in the center,
+                otherwise a ``float`` will specify the central offset value.
+            y0 (Optional[float/None]): If ``None``, no change to the y-axis. If
+                ``True``, will shift the y-axis such that 0 is in the center,
+                otherwise a ``float`` will specify the central offset value.
         """
-        if x0:
-            self.xaxis -= 0.5 * (abs(self.xaxis[-1]) - abs(self.xaxis[0]))
-            self.xaxis -= self.dpix
+        if x0 is not None:
+            self.xaxis -= self.xaxis[0]
+            self.xaxis -= 0.5 * self.xaxis[-1]
             self.xaxis += 0.0 if isinstance(x0, bool) else x0
-        if y0:
-            self.yaxis -= 0.5 * (abs(self.yaxis[-1]) - abs(self.yaxis[0]))
-            self.yaxis -= self.dpix
+        if y0 is not None:
+            self.yaxis -= self.yaxis[0]
+            self.yaxis -= 0.5 * self.yaxis[-1]
             self.yaxis += 0.0 if isinstance(y0, bool) else y0
 
     def _check_xaxis_direction(self):
