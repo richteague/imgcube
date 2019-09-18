@@ -2380,7 +2380,10 @@ class imagecube:
             hdu.header['CUNIT3'] = 'm/s'
 
             # Other. Defaults to CO (3-2) if no frequency given.
-            hdu.header['BUNIT'] = 'JY/BEAM'
+            try:
+                hdu.header['BUNIT'] = self.bunit.upper()
+            except:
+                hdu.header['BUNIT'] = 'JY/BEAM'
             try:
                 hdu.header['RESTFREQ'] = self.header['RESTFREQ']
             except:
