@@ -1703,18 +1703,13 @@ class imagecube:
 
     def get_cut(self, z=0.0, dz=None, x0=0.0, y0=0.0, PA=0.0, mstar=1.0,
                 dist=100.0, grid=True, downsample=1, griddata_kwargs=None,
-                cylindrical_rotation=False, remove_noise=True, min_npnts=5):
+                cylindrical_rotation=False, clip_noise=True, min_npnts=5,
+                mask_velocities=None, grid_spacing=None, statistic='mean'):
         """
         Return a deprojected cut of the data following `Matra et al. (2017)`_,
         which will be ``I_nu(x, |y|)``. If ``grid=True`` then this will be
         gridded using ``scipy.interpolate.griddata`` onto axes with the same
         pixel spacing as the attached data.
-
-        .. warning::
-
-            This assumes that the disk is directly edge on (inc = 90 degrees)
-            and that the rotation is cylindrical, that is, it doesn't change
-            with height. These changes are coming.
 
         .. _Matra et al. (2017): https://ui.adsabs.harvard.edu/abs/2017MNRAS.464.1415M
 
@@ -1736,10 +1731,10 @@ class imagecube:
             cylindrical_rotation (Optional[bool]): If ``True``, assume
                 cylindrical rotation rather than a Keplerian rotation profile
                 which decreases with height in the disk.
-            remove_noise (Optional[bool]): If ``True``, remove all pixels which
+            clip_noise (Optional[bool]): If ``True``, remove all pixels which
                 fall below 3 times the standard deviation of the two edge
-                channels. If the argument is a ``float``, use this as the sigma
-                clip level.
+                channels. If the argument is a ``float``, use this as the clip
+                level.
 
         Returns:
             ndarray: Either three 1D arrays containing ``(x, y, I_nu)``, or, if
@@ -1749,14 +1744,13 @@ class imagecube:
 
         # Pixel coordinates.
 
-        v = np.ones(self.data.shape) * self.velax[:, None, None]
-        x = np.ones(self.data.shape) * self.xaxis[None, None, :] * dist * sc.au
-        y = np.power(sc.G * self.msun * mstar * (x / v)**2, 2./3.)
-        if not cylindrical_rotation:
-            y -= (z * dist * sc.au)**2
-        y = np.sqrt(y - x**2)
+        v_sky = np.ones(self.data.shape) * self.velax[:, None, None]
+        x_sky = np.ones(self.data.shape) * self.xaxis[None, None, :]
+        y_sky = np.ones(self.data.shape) * self.yaxis[None, :, None]
+        x_sky *= dist * sc.au
+        y_sky *= dist * sc.au
 
-        # Rotate the data to correct position.
+        # Shift the emission distribution.
 
         if (x0 == 0.0) & (y0 == 0.0):
             I = self.data.copy()
@@ -1764,41 +1758,105 @@ class imagecube:
             I = self.shift_center(dx0=x0, dy0=y0, save=False)
         I = I if PA == 0.0 else self.rotate_image(PA, data=I, save=False)
 
-        # Select an appropriate width.
+        # Extract the right PPV subsection.
 
-        dz = int(dz / self.dpix) if dz is not None else 0
-        idx_a = abs(self.yaxis - z).argmin() - int(dz / 2)
-        idx_b = idx_a + dz + 1
+        if mask_velocities:
+            mask = [np.logical_and(self.velax <= v_min, self.velax >= v_max)
+                    for v_min, v_max in np.atleast_2d(mask_velocities)]
+            mask = ~np.any(mask, axis=0)
+            mask = mask[:, None, None] * np.ones(v_sky.shape).astype(bool)
+        else:
+            mask = np.ones(self.data.shape).astype(bool)
+        dz = self.bmin if dz is None else dz
+        mask = np.logical_and(abs(y_sky / dist / sc.au - z) <= dz / 2., mask)
+        x_sky, y_sky, v_sky, I = x_sky[mask], y_sky[mask], v_sky[mask], I[mask]
 
-        # Take the right slice.
+        # Transformation from PPV to PPP.
 
-        x = x[:, idx_a:idx_b] / sc.au / dist
-        y = y[:, idx_a:idx_b] / sc.au / dist
-        I = I[:, idx_a:idx_b]
+        x_disk = x_sky.copy() / dist / sc.au
+        y_disk = sc.G * self.msun * mstar * (x_sky / v_sky)**2
+        y_disk = np.power(y_disk, 2./3.) - x_sky**2
+        if not cylindrical_rotation:
+            y_disk -= y_sky**2
+        y_disk = np.sqrt(y_disk) / dist / sc.au
+        z_disk = y_sky.copy() / dist / sc.au
+
+        # Return pixel values if necessary.
+
         if not grid:
-            return x, y, I
+            return x_disk, y_disk, I
 
         # Remove NaNs.
 
-        x, y, I = x.flatten(), y.flatten(), I.flatten()
-        mask = np.isfinite(I) & np.isfinite(y)
-        x, y, I = x[mask], y[mask], I[mask]
+        mask = np.isfinite(y_disk) & np.isfinite(I)
+        x_disk, y_disk = x_disk[mask], y_disk[mask]
+        z_disk, I = z_disk[mask], I[mask]
 
         # Remove noise.
-        if remove_noise:
-            if isinstance(remove_noise, bool):
-                remove_noise = 3.0
-            rms = np.nanstd([self.data[0], self.data[-1]])
-            mask = I >= remove_noise * rms
-            x, y, I = x[mask], y[mask], I[mask]
+
+        print(np.nanmedian(I), np.nanmin(I))
+
+        if clip_noise:
+            if isinstance(clip_noise, bool):
+                clip_noise = 3.0 * np.nanstd([self.data[0], self.data[-1]])
+            clip_noise = max(clip_noise, 0.0)
+            mask = I > clip_noise
+        else:
+            mask = I != 0.0
+        x_disk, y_disk = x_disk[mask], y_disk[mask]
+        z_disk, I = z_disk[mask], I[mask]
+
+        # Downsample the data to speed up the averaging.
+        # TODO: Check to see if this is actually necessary.
+
+        if downsample > 1:
+            d = int(downsample)
+            x_disk, y_disk, I = x_disk[::d], y_disk[::d], I[::d]
+
+        mask = np.isfinite(y_disk) & np.isfinite(I)
+        x_disk, y_disk = x_disk[mask], y_disk[mask]
+        z_disk, I = z_disk[mask], I[mask]
+
+        # Grid the data.
+
+        x_grid = self.xaxis.copy()
+        x_grid = np.unique(sorted(x_grid))
+        if grid_spacing is not None:
+            x_grid = np.arange(x_grid[0], x_grid[-1], grid_spacing)
+
+        y_grid = self.yaxis.copy()
+        y_grid = np.unique(sorted(y_grid[y_grid >= 0.0]))
+        if grid_spacing is not None:
+            y_grid = np.arange(y_grid[0], y_grid[-1], grid_spacing)
+
+        from scipy.interpolate import griddata
+        griddata_kwargs = {} if griddata_kwargs is None else griddata_kwargs
+        print(np.median(I), np.min(I))
+
+        I_grid = griddata((x_disk, y_disk), I,
+                          (x_grid[None, :], y_grid[:, None]),
+                          **griddata_kwargs)
+
+        return x_grid, y_grid, I_grid
+
+        """
+        # Old gridding. Need something which will interpolate.
+        I_grid = binned_statistic_2d(x_disk, y_disk, I, bins=[x_bins, y_bins],
+                                     statistic=statistic)[0]
+        dI_grid = binned_statistic_2d(x_disk, y_disk, I, bins=[x_bins, y_bins],
+                                      statistic='std')[0]
+        N_pnts = binned_statistic_2d(x_disk, y_disk, I, bins=[x_bins, y_bins],
+                                     statistic='count')[0]
+        I_grid = np.where(N_pnts >= min_npnts, I_grid, np.nan)
+        dI_grid = np.where(N_pnts >= min_npnts, dI_grid / N_pnts**0.5, np.nan)
+        """
+
+        return x_grid, y_grid, I_grid.T, dI_grid.T
 
         # Grid the data.
 
         from scipy.interpolate import griddata
         griddata_kwargs = {} if griddata_kwargs is None else griddata_kwargs
-        if downsample > 1:
-            downsample = int(downsample)
-            x, y, I = x[::downsample], y[::downsample], I[::downsample]
         x_grid = self.xaxis.copy()
         x_grid = x_grid[np.argsort(x_grid)]
         y_grid = self.yaxis.copy()[self.yaxis >= 0.0]
