@@ -31,17 +31,20 @@ class imagecube:
             ``verbose`` will be set to ``False`` unless specified.
         preserve_NaN (Optional[bool]): If ``False``, convert all ``NaN`` values
             to ``0.0``.
-        force_center (Optional[bool]: If ``True``, will check to see if the
-            coordinate axes are symmetric, i.e. that
-            ``self.xaxis[0] == -self.xaxis[-1]``. If this check fails, the
-            axes will be shifted to center the image.
-        center_velocity (Optional[float]: If specified, shift the velocity axis
-            such that this value is at the center of the velocity axis. Note
-            that this does not mean it lies in a channel center.
-        x0 (Optional[float]): Recenter the image to this right ascencion
-            offset [arcsec].
-        y0 (Optional[float]): Recenter the image to this declination
-            offset [arcsec].
+        center_axes (Optional[None/bool/float]: If ``None`` or ``False``, no
+            change to the axes. If ``True``, will shift the axes such that 0 is
+            in the center, otherwise a ``float`` will specify the central offset
+            value. This can be either a tuple, representing the x- and y-axis
+            individually. If just a single value, will apply to both axes.
+        center_velocity (Optional[bool/float/None]): If ``None`` or ``False``,
+            no change is made. If ``True``, will center the velocity to 0 [m/s],
+            otherwise a ``float`` will be the central velocity in [m/s].
+        dx0 (Optional[float]): Recenter the image to this right ascencion
+            offset [arcsec]. This uses 2D interpolation to shift the image
+            relative to the axes.
+        dy0 (Optional[float]): Recenter the image to this declination
+            offset [arcsec]. This uses 2D interpolation to shift the image
+            relative to the axes.
     """
 
     # Disk specific units.
@@ -52,7 +55,7 @@ class imagecube:
 
     def __init__(self, fitsfile, kelvin=False, clip=None, resample=1,
                  verbose=None, preserve_NaN=False, suppress_warnings=True,
-                 force_center=False, center_velocity=None, x0=0.0, y0=0.0):
+                 center_axes=None, center_velocity=None, dx0=0.0, dy0=0.0):
 
         # Suppres warnings.
 
@@ -87,35 +90,25 @@ class imagecube:
         self.dpix = np.mean([abs(np.diff(self.xaxis)),
                              abs(np.diff(self.yaxis))])
 
-        # If we want to clip the cube, check that the image is
-        # roughly in the center. TODO: Find a better heuristic
-        # for this. Maybe beamsize?
 
-        if force_center is False and clip is not None:
-            if abs(abs(self.xaxis[-1]) - abs(self.xaxis[0])) > 3 * self.dpix:
-                force_center = True
-            if abs(abs(self.yaxis[-1]) - abs(self.yaxis[0])) > 3 * self.dpix:
-                force_center = True
+        # Center the spatial axes.
 
-        # Alter the axes to make sure they're symmetric about the center.
-        # TODO: Check with CASA for consistency.
+        if clip is not None and not center_axes:
+            center_axes = True
 
-        if force_center:
-            self.xaxis -= 0.5 * (abs(self.xaxis[-1]) - abs(self.xaxis[0]))
-            self.xaxis -= self.dpix
-            self.yaxis -= 0.5 * (abs(self.yaxis[-1]) - abs(self.yaxis[0]))
-            self.yaxis -= self.dpix
+        if center_axes:
+            center_axes = np.squeeze(center_axes)
+            if center_axes.size == 1:
+                self._center_spatial_axes(x0=center_axes, y0=center_axes)
+            else:
+                self._center_spatial_axes(x0=center_axes[0], y0=center_axes[1])
 
-        # Make sure that x-axis is _decreasing_.
-
-        if self.xaxis[0] < self.xaxis[-1]:
-            self.xaxis = self.xaxis[::-1]
-            self.data = self.data[:, :, ::-1]
+        self._check_xaxis_direction()
 
         # Recenter the image if requested.
 
-        if (x0 != 0.0) or (y0 != 0.0):
-            self.shift_center(dx0=x0, dy0=y0, save=True)
+        if (dx0 != 0.0) or (dy0 != 0.0):
+            self.shift_center(dx0=dx0, dy0=dy0, save=True)
 
         # Spectral axis. Make sure velocity is increasing.
 
@@ -134,14 +127,9 @@ class imagecube:
             self.chan = None
             self.freqax = None
 
-        # Shift the velocity axis.
-
-        if center_velocity is not None:
-            if isinstance(center_velocity, bool):
-                center_velocity = 0.0
-            self.velax -= self.velax[0]
-            self.velax -= 0.5 * self.velax[-1]
-            self.velax += center_velocity
+        # Ceneter the velocity axis.
+        if center_velocity:
+            self._center_velocity_axis(v0=center_velocity)
 
         # Get the beam properties of the beam. If a CASA beam table is found,
         # take the median values. If neither is specified, assume that the
@@ -193,8 +181,6 @@ class imagecube:
                 raise ValueError("Mistmatch in data and velax shapes.")
 
         return
-
-    
 
     # == Coordinate Deprojection == #
 
@@ -1710,7 +1696,7 @@ class imagecube:
 
         Args:
             z (Optional[float]): Height at which to take the slice in [arcsec].
-            dz (Optional[int]: Width of the slice to take in [arcsec]. 
+            dz (Optional[int]: Width of the slice to take in [arcsec].
             x0 (Optional[float]): Source right ascension offset [arcsec].
             y0 (Optional[float]): Source declination offset [arcsec].
             PA (Optional[float]): Position angle of the disk in [deg].
@@ -1757,7 +1743,7 @@ class imagecube:
         # Select an appropriate width.
 
         dz = int(dz / self.dpix) if dz is not None else 0
-        idx_a = abs(self.yaxis - z).argmin() - int(dz / 2) 
+        idx_a = abs(self.yaxis - z).argmin() - int(dz / 2)
         idx_b = idx_a + dz + 1
 
         # Take the right slice.
@@ -2478,6 +2464,56 @@ class imagecube:
         self.nxpix = self.xaxis.size
         self.nypix = self.yaxis.size
 
+        # Shift the velocity axis.
+
+    def _center_velocity_axis(self, v0=None):
+        """
+        Shift the velocity axis such that ``v0`` is at the center. Note that
+        this will not necessarily be a channel center.
+
+        Args:
+            v0 (Optional[bool/float/None]): If ``None`` or ``False``, no change
+                is made. If ``True``, will center the velocity to 0 [m/s],
+                otherwise a ``float`` will be the central velocity in [m/s].
+        """
+        if v0:
+            self.velax -= self.velax[0]
+            self.velax -= 0.5 * self.velax[-1]
+            self.velax += 0.0 if isinstance(v0, bool) else v0
+
+    def _center_spatial_axes(self, x0=None, y0=None):
+        """
+        Shift the spatial axes such that the center of the image is (x0, y0).
+        This is different from ``shift_center`` which will shift the image using
+        ``scipy.interpolate``, while this just renumbers the attached axes. This
+        function is more appropriate for image cubes which do not have well
+        defined axes (e.g. those from some radiative transfer codes).
+
+        Args:
+            x0 (Optional[bool/float/None]): If ``None`` or ``False``, no change
+                to the x-axis. If ``True``, will shift the x-axis such that 0
+                is in the center, otherwise a ``float`` will specify the central
+                offset value.
+            y0 (Optional[bool/float/None]): If ``None`` or ``False``, no change
+                to the y-axis. If ``True``, will shift the y-axis such that 0
+                is in the center, otherwise a ``float`` will specify the central
+                offset value.
+        """
+        if x0:
+            self.xaxis -= 0.5 * (abs(self.xaxis[-1]) - abs(self.xaxis[0]))
+            self.xaxis -= self.dpix
+            self.xaxis += 0.0 if isinstance(x0, bool) else x0
+        if y0:
+            self.yaxis -= 0.5 * (abs(self.yaxis[-1]) - abs(self.yaxis[0]))
+            self.yaxis -= self.dpix
+            self.yaxis += 0.0 if isinstance(y0, bool) else y0
+
+    def _check_xaxis_direction(self):
+        """Check that the x-axis is decreasing with index."""
+        if self.xaxis[0] < self.xaxis[-1]:
+            self.xaxis = self.xaxis[::-1]
+            self.data = self.data[:, :, ::-1]
+
     def _readspectralaxis(self, a):
         """Returns the spectral axis in [Hz] or [m/s]."""
         a_len = self.header['naxis%d' % a]
@@ -2662,7 +2698,6 @@ class imagecube:
         if frame_out == 'cylindrical':
             return rvals, phi
         return rvals * np.cos(phi), rvals * np.sin(phi)
-
 
     def plot_axes(self, ax, x0=0.0, y0=0.0, inc=0.0, PA=0.0, major=1.0,
                    plot_kwargs=None):
