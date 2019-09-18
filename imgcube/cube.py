@@ -31,7 +31,7 @@ class imagecube:
             ``verbose`` will be set to ``False`` unless specified.
         preserve_NaN (Optional[bool]): If ``False``, convert all ``NaN`` values
             to ``0.0``.
-        center_axes (Optional[None/bool/float]): If ``None`` or ``False``, no
+        center_axes (Optional[float/None]): If ``None`` or ``False``, no
             change to the axes. If ``True``, will shift the axes such that 0 is
             in the center, otherwise a ``float`` will specify the central offset
             value. This can be either a tuple, representing the x- and y-axis
@@ -1576,7 +1576,7 @@ class imagecube:
     def cross_section(self, x0=0.0, y0=0.0, PA=0.0, mstar=1.0, dist=100.,
                       grid=True, grid_spacing=None, downsample=1,
                       cylindrical_rotation=False, clip_noise=True, min_npnts=5,
-                      mask_velocities=None):
+                      statistic='mean', mask_velocities=None):
         """
         Return the cross section of the data following `Dutrey et al. (2017)`_.
         This yields ``I_nu(r, z)``. If ``grid=True`` then this will be gridded
@@ -1606,6 +1606,9 @@ class imagecube:
                 level.
             min_npnts (Optional[int]): Number of minimum points in each bin for
                 the average. Default is 5.
+            statistic (Optional[str]): Statistic to calculate for each bin. Note
+                that the uncertainty returned will only make sense with
+                ``'max'``, ``'mean'`` or ``'median'``.
             mask_velocities (Optional[list of tuples]): List of
                 ``(v_min, v_max)`` tuples to mask (i.e. remove from the
                 averaging).
@@ -1689,7 +1692,7 @@ class imagecube:
 
         from scipy.stats import binned_statistic_2d
         I_grid = binned_statistic_2d(R, Z, I, bins=[R_bins, Z_bins],
-                                     statistic='mean')[0]
+                                     statistic=statistic)[0]
         dI_grid = binned_statistic_2d(R, Z, I, bins=[R_bins, Z_bins],
                                       statistic='std')[0]
         N_pnts = binned_statistic_2d(R, Z, I, bins=[R_bins, Z_bins],
