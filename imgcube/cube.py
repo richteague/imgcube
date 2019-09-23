@@ -90,7 +90,6 @@ class imagecube:
         self.dpix = np.mean([abs(np.diff(self.xaxis)),
                              abs(np.diff(self.yaxis))])
 
-
         # Center the spatial axes.
 
         if clip is not None and center_axes is None:
@@ -127,7 +126,7 @@ class imagecube:
             self.freqax = None
 
         # Ceneter the velocity axis.
-        if center_velocity:
+        if center_velocity is not None:
             self._center_velocity_axis(v0=center_velocity)
 
         # Get the beam properties of the beam. If a CASA beam table is found,
@@ -1574,7 +1573,7 @@ class imagecube:
         self.data = np.squeeze(data)
 
     def cross_section(self, x0=0.0, y0=0.0, PA=0.0, mstar=1.0, dist=100.,
-                      grid=True, grid_spacing=None, downsample=1,
+                      vlsr=None, grid=True, grid_spacing=None, downsample=1,
                       cylindrical_rotation=False, clip_noise=True, min_npnts=5,
                       statistic='mean', mask_velocities=None):
         """
@@ -1591,6 +1590,8 @@ class imagecube:
             PA (Optional[float]): Position angle of the disk in [deg].
             mstar (Optional[float]): Mass of the central star in [Msun].
             dist (Optional[float]): Distance to the source in [pc].
+            vlsr (Optional[float]): Systemic velocity in [m/s]. If ``None``,
+                assumes the central velocity.
             grid (Optional[bool]): Whether to grid the coordinates to a regular
                 grid. Default is ``True``.
             grid_spacing (Optional[float]): The spacing, in [arcsec], for the R
@@ -1623,6 +1624,7 @@ class imagecube:
         v_sky = np.ones(self.data.shape) * self.velax[:, None, None]
         x_sky = np.ones(self.data.shape) * self.xaxis[None, None, :]
         y_sky = np.ones(self.data.shape) * self.yaxis[None, :, None]
+        v_sky -= np.median(self.velax) if vlsr is None else vlsr
         x_sky *= dist * sc.au
         y_sky *= dist * sc.au
 
@@ -1702,9 +1704,10 @@ class imagecube:
         return R_grid, Z_grid, I_grid.T, dI_grid.T
 
     def get_cut(self, z=0.0, dz=None, x0=0.0, y0=0.0, PA=0.0, mstar=1.0,
-                dist=100.0, grid=True, downsample=1, griddata_kwargs=None,
-                cylindrical_rotation=False, clip_noise=True, min_npnts=5,
-                mask_velocities=None, grid_spacing=None, statistic='mean'):
+                dist=100.0, vlsr=None, grid=True, downsample=1,
+                griddata_kwargs=None, cylindrical_rotation=False,
+                clip_noise=True, min_npnts=5, mask_velocities=None,
+                grid_spacing=None, statistic='mean'):
         """
         Return a deprojected cut of the data following `Matra et al. (2017)`_,
         which will be ``I_nu(x, |y|)``. If ``grid=True`` then this will be
@@ -1721,6 +1724,8 @@ class imagecube:
             PA (Optional[float]): Position angle of the disk in [deg].
             mstar (Optional[float]): Mass of the central star in [Msun].
             dist (Optional[float]): Distance to the source in [pc].
+            vlsr (Optional[float]): Systemic velocity in [m/s]. If ``None``,
+                assumes the central velocity channel.
             grid (Optional[bool]): Whether to grid the coordinates to a regular
                 grid. Default is ``True``.
             downsample (Optional[int]): If provided, downsample the coordinates
@@ -1749,6 +1754,7 @@ class imagecube:
         y_sky = np.ones(self.data.shape) * self.yaxis[None, :, None]
         x_sky *= dist * sc.au
         y_sky *= dist * sc.au
+        v_sky -= np.median(self.velax) if vlsr is None else vlsr
 
         # Shift the emission distribution.
 
@@ -1794,8 +1800,6 @@ class imagecube:
 
         # Remove noise.
 
-        print(np.nanmedian(I), np.nanmin(I))
-
         if clip_noise:
             if isinstance(clip_noise, bool):
                 clip_noise = 3.0 * np.nanstd([self.data[0], self.data[-1]])
@@ -1831,27 +1835,11 @@ class imagecube:
 
         from scipy.interpolate import griddata
         griddata_kwargs = {} if griddata_kwargs is None else griddata_kwargs
-        print(np.median(I), np.min(I))
-
         I_grid = griddata((x_disk, y_disk), I,
                           (x_grid[None, :], y_grid[:, None]),
                           **griddata_kwargs)
 
         return x_grid, y_grid, I_grid
-
-        """
-        # Old gridding. Need something which will interpolate.
-        I_grid = binned_statistic_2d(x_disk, y_disk, I, bins=[x_bins, y_bins],
-                                     statistic=statistic)[0]
-        dI_grid = binned_statistic_2d(x_disk, y_disk, I, bins=[x_bins, y_bins],
-                                      statistic='std')[0]
-        N_pnts = binned_statistic_2d(x_disk, y_disk, I, bins=[x_bins, y_bins],
-                                     statistic='count')[0]
-        I_grid = np.where(N_pnts >= min_npnts, I_grid, np.nan)
-        dI_grid = np.where(N_pnts >= min_npnts, dI_grid / N_pnts**0.5, np.nan)
-        """
-
-        return x_grid, y_grid, I_grid.T, dI_grid.T
 
         # Grid the data.
 
@@ -2561,10 +2549,11 @@ class imagecube:
                 is made. If ``True``, will center the velocity to 0 [m/s],
                 otherwise a ``float`` will be the central velocity in [m/s].
         """
-        if v0:
-            self.velax -= self.velax[0]
-            self.velax -= 0.5 * self.velax[-1]
-            self.velax += 0.0 if isinstance(v0, bool) else v0
+        velax = self.velax.copy()
+        if v0 is not None:
+            velax -= np.median(velax)
+            velax += 0.0 if isinstance(v0, bool) else v0
+        self.velax = velax
 
     def _center_spatial_axes(self, x0=None, y0=None):
         """
