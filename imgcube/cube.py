@@ -179,6 +179,12 @@ class imagecube:
             if self.velax.size != self.data.shape[0]:
                 raise ValueError("Mistmatch in data and velax shapes.")
 
+        # Estimate the RMS of the cube.
+        if self.data.ndim == 3 and self.data.shape[0] > 2:
+            self.rms = self._estimate_RMS(N=1)
+        else:
+            self.rms = np.nan
+
         return
 
     # == Coordinate Deprojection == #
@@ -1048,7 +1054,10 @@ class imagecube:
         return np.where(mask, fill, self.data.copy())
 
     def _estimate_RMS(self, N=5):
-        """Estimate the noise from the first and last N channels."""
+        """
+        Estimate the noise from the inner half of the first and last N
+        channels.
+        """
         sx, fx = np.percentile(np.arange(self.xaxis.size),
                                [25, 75]).astype('int')
         sy, fy = np.percentile(np.arange(self.yaxis.size),
@@ -2026,7 +2035,8 @@ class imagecube:
 
     # == Spectra Functions == #
 
-    def integrated_spectrum(self, r_min=None, r_max=None, clip_values=None):
+    def integrated_spectrum(self, r_min=None, r_max=None, x0=0.0, y0=0.0,
+                            inc=0.0, PA=0.0, clip_values=None):
         """
         Return an integrated spectrum in [Jy]. Will convert images in Tb to
         Jy/beam using the full Planck law. This may cause some noise issues for
@@ -2037,6 +2047,15 @@ class imagecube:
                 integrate over. Note this is just a circular mask.
             r_max (Optional[float]): Outer radius in [arcsec] of the area to
                 integrate over. Note this is just a circular mask.
+            x0 (Optional[float]): Source center offset from the image center in
+                the x direction, measured in [arcsec].
+            y0 (Optional[float]): Source center offset from the image cneter in
+                the y direction, measured in [arcsec].
+            inc (Optional[float]): Inclination of the circular mask in
+                [degrees], to make it elliptical to integrate over. Default is
+                0, so results in a circular mask.
+            PA (Optional[float]): Position angle of the inclined integration
+                mask in [degrees].
             clip_values (Optional[float/iterable]): Clip the data values. If a
                 single value is given, clip all values below this, if two
                 values are given, clip values between them.
@@ -2049,12 +2068,12 @@ class imagecube:
         if self.data.ndim != 3:
             raise ValueError("Cannot make a spectrum from a 2D image.")
         mask = np.ones(self.data.shape)
-        if r_max is not None or r_min is not None:
-            rvals = np.hypot(self.xaxis[None, :], self.yaxis[:, None])
-            if r_max is not None:
-                mask = np.where(rvals[None, :, :] <= r_max, mask, 0)
-            if r_min is not None:
-                mask = np.where(rvals[None, :, :] >= r_min, mask, 0)
+
+        r_min = -1.0 if r_min is None else r_min
+        r_max = 1e10 if r_max is None else r_max
+
+        rvals = self.disk_coords(x0=x0, y0=y0, inc=inc, PA=PA)[0]
+        mask = np.logical_and(rvals >= r_min, rvals <= r_max).astype(int)
         to_sum = self._clipped_noise(clip_values=clip_values)
         if self.bunit.lower() == 'k':
             to_sum = self._Tb_to_jybeam(data=to_sum)
@@ -2272,7 +2291,7 @@ class imagecube:
         v2 = abs(mask - np.ones(self.data.shape) * v2[None, :, :])
         return np.where(np.logical_or(v1 <= dV, v2 <= dV), 1.0, 0.0)
 
-    def synthetic_obs(self, bmaj, bmin=None, bpa=0.0, rms=None, chan=None,
+    def synthetic_obs(self, bmaj=None, bmin=None, bpa=0.0, rms=None, chan=None,
                       nchan=None, rescale='auto', spectral_response=None,
                       save=False):
         """
@@ -2281,7 +2300,7 @@ class imagecube:
         the attached brightness unit to 'Jy/beam'.
 
         Args:
-            bmaj (float): Beam major axis in [arcsec].
+            bmaj (optional[float]): Beam major axis in [arcsec].
             bmin (optional[float]): Beam minor axis in [arcsec].
             bpa (optional[float]): Beam position angle in [degrees].
             rms (optional[float]): RMS noise of the noise.
@@ -2306,6 +2325,7 @@ class imagecube:
         """
 
         # Check the input values.
+        bmaj = -1.0 if bmaj is None else bmaj
         bmin = bmaj if bmin is None else bmin
         if bmin > bmaj:
             temp = bmin
@@ -2320,7 +2340,7 @@ class imagecube:
             if rescale < 1:
                 raise ValueError("rescale ({}) must be > 1.".format(rescale))
         elif rescale == 'auto':
-            rescale = bmin / self.dpix / 5.0
+            rescale = bmin / self.dpix / 5.0 if bmin > 0.0 else 1
         if rescale:
             from scipy.ndimage import zoom
             data = np.array([zoom(d, 1. / rescale) for d in data])
@@ -2342,7 +2362,7 @@ class imagecube:
             vspan = self.velax.max() - self.velax.min()
             if nchan is None:
                 nchan = vspan // chan
-            start = 0.5 * (vspan - nchan * chan)
+            start = 0.5 * (vspan - nchan * chan) + self.velax.min()
             velax = np.arange(0, nchan * chan, chan) + start
 
             # Make sure the new axis doesn't overshoot the data.
@@ -2370,12 +2390,16 @@ class imagecube:
             chan = self.chan
 
         # Spatially convolve the data.
-        from astropy.convolution import convolve, Gaussian2DKernel
-        beam = Gaussian2DKernel(bmin/dpix/self.fwhm, bmaj/dpix/self.fwhm, bpa)
-        data = np.array([convolve(c, beam, boundary='extend') for c in data])
+        if bmaj > 0.0:
+            from astropy.convolution import convolve, Gaussian2DKernel
+            beam = Gaussian2DKernel(bmin / dpix / self.fwhm,
+                                    bmaj / dpix / self.fwhm,
+                                    bpa)
+            data = np.array([convolve(c, beam, boundary='extend')
+                            for c in data])
 
         # If necessary, convert from Jy/pixel to Jy/beam.
-        if self.header['bunit'].lower() == 'jy/pixel':
+        if (self.header['bunit'].lower() == 'jy/pixel') & (bmaj > 0.0):
             data *= np.pi * bmin * bmaj / 4. / np.log(2.) / self.dpix**2
 
         # Include a spectral response.
@@ -2588,7 +2612,10 @@ class imagecube:
         """Check that the x-axis is decreasing with index."""
         if self.xaxis[0] < self.xaxis[-1]:
             self.xaxis = self.xaxis[::-1]
-            self.data = self.data[:, :, ::-1]
+            if self.data.ndim == 3:
+                self.data = self.data[:, :, ::-1]
+            else:
+                self.data = self.data[:, ::-1]
 
     def _readspectralaxis(self, a):
         """Returns the spectral axis in [Hz] or [m/s]."""
