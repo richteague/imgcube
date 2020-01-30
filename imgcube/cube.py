@@ -33,9 +33,10 @@ class imagecube:
             to ``0.0``.
         center_axes (Optional[float/None]): If ``None`` or ``False``, no
             change to the axes. If ``True``, will shift the axes such that 0 is
-            in the center, otherwise a ``float`` will specify the central offset
-            value. This can be either a tuple, representing the x- and y-axis
-            individually. If just a single value, will apply to both axes.
+            in the center, otherwise a ``float`` will specify the central
+            offset value. This can be either a tuple, representing the x- and
+            y-axis individually. If just a single value, will apply to both
+            axes.
         center_velocity (Optional[float/None]): If ``None``, no change is made.
             If ``True``, will center the velocity to 0 [m/s], otherwise a
             ``float`` will be the central velocity in [m/s].
@@ -1998,7 +1999,7 @@ class imagecube:
         # profile with a top-hat function to reduce some of the noise. We find
         # the two peaks and follow the method from Pinte et al. (2018a) to
         # calculate the height of the emission.
-        #from detect_peaks import detect_peaks
+        # from detect_peaks import detect_peaks
         smooth = smooth / np.sum(smooth) if smooth is not None else [1.0]
         peaks = []
         for c_idx in range(data.shape[0]):
@@ -2014,7 +2015,7 @@ class imagecube:
                     y_c = 0.5 * (y_f + y_n)
                     r = np.hypot(x_c, (y_f - y_c) / np.cos(np.radians(inc)))
                     z = y_c / np.sin(np.radians(inc))
-                    if z > 0.5 * r or z < 0:
+                    if z > 0.75 * r or z < 0:
                         raise ValueError()
                     Tb = data[c_idx, y_idx[-1], x_idx]
                 except:
@@ -2140,7 +2141,8 @@ class imagecube:
     def CLEAN_mask(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=0.0, psi=1.0,
                    z1=0.0, phi=1.0, mstar=1.0, dist=100.,
                    r_max=None, r_min=None, vlsr=0.0, dV0=500., dVq=-0.4,
-                   nbeams=0.0, fname=None, fast=True, return_mask=False):
+                   mask_back=True, nbeams=0.0, fname=None, fast=True,
+                   return_mask=False):
         """
         Create a mask suitable for CLEANing the data. The flared emission
         surface is described with the usual geometrical parameters (see
@@ -2195,10 +2197,11 @@ class imagecube:
 
         # Loop over all the systemic velocities.
         mask = [self._keplerian_mask(x0=x0, y0=y0, inc=inc, PA=PA,
-                                     z0=0.0, psi=psi, z1=z1, phi=phi,
+                                     z0=z0, psi=psi, z1=z1, phi=phi,
                                      mstar=mstar, r_max=r_max,
                                      r_min=r_min, dist=dist, vlsr=v, dV=dV0,
-                                     dVq=dVq) for v in vlsr]
+                                     dVq=dVq, mask_back=mask_back)
+                                     for v in vlsr]
         mask = np.where(np.nansum(mask, axis=0) > 0, 1, 0)
         if mask.shape != self.data.shape:
             raise ValueError("Mask shape is not the same as the data.")
@@ -2239,7 +2242,8 @@ class imagecube:
 
     def _keplerian_mask(self, x0=0.0, y0=0.0, inc=0.0, PA=0.0, z0=0.0, psi=1.0,
                         z1=0.0, phi=1.0, mstar=1.0, r_max=None,
-                        r_min=None, dist=100, vlsr=0.0, dV=250., dVq=0.0):
+                        r_min=None, dist=100, vlsr=0.0, dV=250., dVq=0.0,
+                        mask_back=True):
         """Generate the Keplerian mask as a cube. dV is FWHM of line."""
         mask = np.ones(self.data.shape) * self.velax[:, None, None]
         r_min = 0.0 if r_min is None else r_min
@@ -2255,7 +2259,7 @@ class imagecube:
                               z1=z1, phi=phi)[0]
         v1 = np.where(np.logical_and(rr >= r_min, rr <= r_max), v1, 1e20)
         v1 = abs(mask - np.ones(self.data.shape) * v1[None, :, :])
-        if z0 == 0.0 and z1 == 0.0:
+        if (z0 == 0.0 and z1 == 0.0) or (not mask_back):
             return np.where(v1 <= dV, 1.0, 0.0)
 
         # Rotation of the far side of the disk if appropriate.
