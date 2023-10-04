@@ -88,8 +88,8 @@ class imagecube:
         self.yaxis = self._readpositionaxis(a=2)
         self.nxpix = self.xaxis.size
         self.nypix = self.yaxis.size
-        self.dpix = np.mean([abs(np.diff(self.xaxis)),
-                             abs(np.diff(self.yaxis))])
+        self.dpix = np.mean(np.concatenate([abs(np.diff(self.xaxis)),
+                                            abs(np.diff(self.yaxis))]))
 
         # Center the spatial axes.
 
